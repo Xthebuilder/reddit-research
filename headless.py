@@ -27,9 +27,12 @@ log = get_logger(__name__)
 
 import brave  # noqa: E402
 import db  # noqa: E402
+import exa_client  # noqa: E402
 import llm  # noqa: E402
 import reddit  # noqa: E402
 import report  # noqa: E402
+import serper_client  # noqa: E402
+import tavily_client  # noqa: E402
 from _version import __version__  # noqa: E402
 from config import MAX_RESEARCH_ITERATIONS, RELEVANCE_THRESHOLD, validate  # noqa: E402
 
@@ -134,28 +137,62 @@ def _search_web_for_sites(query: str, sites: list[str]) -> list[dict]:
     return combined
 
 
+def _active_web_apis() -> list[tuple[str, callable]]:
+    """Return list of (name, search_fn) for every configured search API."""
+    apis = []
+    if brave.is_configured():
+        apis.append(("brave", lambda q: _search_web_for_sites(q, _auto_sites(q))))
+    if tavily_client.is_configured():
+        apis.append(("tavily", lambda q: tavily_client.search(q, count=15)))
+    if serper_client.is_configured():
+        apis.append(("serper", lambda q: serper_client.search(q, count=15)))
+    if exa_client.is_configured():
+        apis.append(("exa", lambda q: exa_client.search(q, count=10)))
+    return apis
+
+
 def _search_web_parallel(queries: list[str], sites: list[str]) -> list[dict]:
-    """Run Brave searches for all queries in parallel, deduplicating by URL."""
-    if not brave.is_configured():
+    """
+    Fire all queries across all configured search APIs in parallel.
+    Results are deduplicated by URL and returned as a flat list.
+    """
+    apis = _active_web_apis()
+    if not apis:
+        status("No web search APIs configured — skipping web search")
         return []
+
     seen: set[str] = set()
     combined: list[dict] = []
+    tasks: list[tuple[str, str, callable]] = []  # (api_name, query, fn)
 
-    def _fetch(q: str) -> list[dict]:
+    for q in queries:
+        for api_name, fn in apis:
+            tasks.append((api_name, q, fn))
+
+    status(f"Firing {len(tasks)} web searches in parallel ({len(apis)} APIs × {len(queries)} queries)...")
+
+    def _fetch(api_name: str, q: str, fn) -> list[dict]:
         try:
-            return _search_web_for_sites(q, sites)
+            results = fn(q)
+            for r in results:
+                r.setdefault("source", api_name)
+            return results
         except Exception:
-            log.exception("parallel web search failed for %r", q)
+            log.exception("%s search failed for %r", api_name, q)
             return []
 
-    with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as pool:
-        futures = {pool.submit(_fetch, q): q for q in queries}
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as pool:
+        futures = {pool.submit(_fetch, name, q, fn): (name, q) for name, q, fn in tasks}
         for fut in as_completed(futures):
+            api_name, q = futures[fut]
             for r in fut.result():
                 url = r.get("url", "")
                 if url and url not in seen:
                     seen.add(url)
                     combined.append(r)
+
+    api_names = ", ".join(n for n, _ in apis)
+    status(f"Web search complete: {len(combined)} unique results from [{api_names}]")
     return combined
 
 

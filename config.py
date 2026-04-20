@@ -37,6 +37,11 @@ REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", f"reddit-research/{__version_
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_MAX_RESULTS = int(os.getenv("BRAVE_MAX_RESULTS", "20"))
 
+# Additional search APIs
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+
 # Storage
 DB_PATH = os.getenv("DB_PATH") or _default_db_path()
 
@@ -84,6 +89,9 @@ def validate(log: Callable[[str], None] = print) -> dict[str, bool]:
     status = {
         "reddit_api": bool(REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET),
         "brave_api": bool(BRAVE_API_KEY),
+        "tavily_api": bool(TAVILY_API_KEY),
+        "serper_api": bool(SERPER_API_KEY),
+        "exa_api": bool(EXA_API_KEY),
         "db_writable": False,
     }
 
@@ -101,6 +109,9 @@ def validate(log: Callable[[str], None] = print) -> dict[str, bool]:
     log(f"  DB path         : {DB_PATH} ({'writable' if status['db_writable'] else 'READ-ONLY'})")
     log(f"  Ollama          : {OLLAMA_BASE_URL} (model: {OLLAMA_MODEL})")
     log(f"  Reddit API      : {'PRAW (authenticated)' if status['reddit_api'] else 'public JSON (rate-limited)'}")
-    log(f"  Brave Search    : {'configured' if status['brave_api'] else 'not configured (web search disabled)'}")
+    log(f"  Brave Search    : {'configured' if status['brave_api'] else 'not configured'}")
+    log(f"  Tavily Search   : {'configured' if status['tavily_api'] else 'not configured'}")
+    log(f"  Serper (Google) : {'configured' if status['serper_api'] else 'not configured'}")
+    log(f"  Exa.ai Search   : {'configured' if status['exa_api'] else 'not configured'}")
 
     return status
