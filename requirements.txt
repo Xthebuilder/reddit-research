@@ -10,3 +10,4 @@ praw>=7.7.1,<8.0.0
 # Search API SDKs (used when keys are configured in .env)
 tavily-python>=0.3.0
 exa-py>=1.0.0
+pyspellchecker>=0.8.0

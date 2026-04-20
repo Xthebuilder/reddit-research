@@ -281,6 +281,15 @@ def run(topic: str, subreddits: list[str]):
         raise RuntimeError(f"Ollama unreachable: {msg}")
     status(f"Ollama OK: {msg}")
 
+    corrected, was_corrected = llm.correct_query(topic)
+    if was_corrected:
+        status(f"Autocorrected query: '{topic}' → '{corrected}'")
+        topic = corrected
+
+    # Validate subreddits exist
+    status("Validating subreddits...")
+    subreddits = reddit.filter_valid_subreddits(subreddits)
+
     sites = _auto_sites(topic)
     status(f"Subreddits: {', '.join(subreddits)} | Sites: {', '.join(sites)}")
 

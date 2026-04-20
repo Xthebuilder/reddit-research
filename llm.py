@@ -168,6 +168,42 @@ def expand_query(query: str, num_queries: int | None = None) -> list[str]:
     return [query]
 
 
+def correct_query(text: str) -> tuple[str, bool]:
+    """
+    Spell-correct a query using pyspellchecker.
+    Returns (corrected_text, was_changed).
+    Preserves capitalisation and punctuation; skips short tokens and URLs.
+    """
+    try:
+        from spellchecker import SpellChecker  # type: ignore
+        spell = SpellChecker()
+        words = text.split()
+        corrected = []
+        changed = False
+        for word in words:
+            # Strip surrounding punctuation for checking
+            stripped = word.strip(".,!?;:\"'()")
+            if not stripped or len(stripped) < 3 or stripped.startswith("http"):
+                corrected.append(word)
+                continue
+            candidate = spell.correction(stripped.lower())
+            if candidate and candidate != stripped.lower():
+                # Preserve original casing style
+                if stripped.isupper():
+                    candidate = candidate.upper()
+                elif stripped[0].isupper():
+                    candidate = candidate.capitalize()
+                fixed = word.replace(stripped, candidate)
+                corrected.append(fixed)
+                changed = True
+            else:
+                corrected.append(word)
+        return " ".join(corrected), changed
+    except Exception:
+        log.exception("correct_query failed for %r", text)
+        return text, False
+
+
 def decompose_topic(topic: str) -> list[str]:
     """
     Break a broad topic into specific, targeted sub-questions.

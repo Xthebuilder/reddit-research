@@ -156,6 +156,30 @@ def _praw_search(subreddit: str, query: str, limit: int, time_filter: str = "yea
 # Public interface
 # ---------------------------------------------------------------------------
 
+def subreddit_exists(subreddit: str) -> bool:
+    """Quick check if a subreddit exists and is accessible."""
+    url = f"{_BASE}/r/{subreddit}/about.json"
+    try:
+        r = get_client().get(url, headers=_HEADERS, timeout=5)
+        if r.status_code == 200:
+            data = r.json().get("data", {})
+            return data.get("subreddit_type") not in (None, "private", "restricted")
+        return False
+    except Exception:
+        return False
+
+
+def filter_valid_subreddits(subreddits: list[str]) -> list[str]:
+    """Remove subreddits that don't exist or are inaccessible."""
+    valid = []
+    for sub in subreddits:
+        if subreddit_exists(sub):
+            valid.append(sub)
+        else:
+            log.warning("subreddit r/%s not found or inaccessible — skipping", sub)
+    return valid or subreddits  # fallback to original list if all fail
+
+
 def use_praw() -> bool:
     return bool(REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET)
 

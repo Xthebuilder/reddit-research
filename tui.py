@@ -902,17 +902,27 @@ class ResearchApp(App):
             self.call_from_thread(self._status, "Enter a topic to search")
             return
 
+        # Autocorrect typos in the query
+        corrected, was_corrected = llm.correct_query(query)
+        if was_corrected:
+            query = corrected
+            self.call_from_thread(self._set_input_value, "#search-input", query)
+            self.call_from_thread(self._status, f"Autocorrected query: {query}")
+
         persona = self.query_one("#persona-input", Input).value.strip() or None
         subs_raw = self.query_one("#subs-input", Input).value.strip()
         auto_subs = self._auto_subreddits_for_query(query, llm_fallback=True)
         auto_sites = self._auto_sites_for_query(query)
         subreddits = [s.strip() for s in subs_raw.split(",") if s.strip()] if subs_raw else auto_subs
+        # Validate subreddits exist before wasting fetch time
+        self.call_from_thread(self._status, "Validating subreddits...")
+        subreddits = reddit.filter_valid_subreddits(subreddits)
         if not subs_raw:
             self.call_from_thread(
                 self._status,
                 f"Auto-selected subreddits: {', '.join(subreddits)}",
             )
-            self.call_from_thread(self._set_input_value, "#subs-input", ", ".join(subreddits))
+        self.call_from_thread(self._set_input_value, "#subs-input", ", ".join(subreddits))
         self._last_auto_subs = subreddits
         self._subs_manually_edited = False
         self.call_from_thread(self._update_subreddit_mode_badge)
