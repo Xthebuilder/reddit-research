@@ -40,8 +40,11 @@ from rich.markup import escape
 import db
 import reddit
 import brave
+import exa_client
 import llm
 import report
+import serper_client
+import tavily_client
 from config import (
     BRAVE_MAX_RESULTS,
     CONTEXT_POSTS,
@@ -477,6 +480,13 @@ class ResearchApp(App):
                 scored.append((score, index, subreddit))
 
         if not scored:
+            # No keyword match — ask LLM to suggest relevant subreddits
+            try:
+                suggested = llm.suggest_subreddits(query, num=6)
+                if suggested:
+                    return suggested
+            except Exception:
+                pass
             return DEFAULT_SUBREDDITS[:4]
 
         scored.sort(key=lambda item: (-item[0], item[1]))
@@ -768,90 +778,115 @@ class ResearchApp(App):
         else:
             self._status("[red]Could not reach Ollama or no models installed[/red]")
 
-    def _fetch_and_process_posts(self, topic_id: int, query: str, subreddits: list[str], tag: str = ""):
+    def _fetch_and_process_posts(self, topic_id: int, query: str, subreddits: list[str], tag: str = "", original_topic: str | None = None, seen_urls: set | None = None):
         """Fetch Reddit posts for a query, then judge + embed + summarize. Returns post count."""
         prefix = f"[{tag}] " if tag else ""
 
         def progress(sub, done, total):
             self.call_from_thread(self._status, f"{prefix}Fetching r/{sub} ({done}/{total})...")
 
-        posts = reddit.fetch_topic(query, subreddits, progress_cb=progress)
-        self.call_from_thread(self._status, f"{prefix}Fetched {len(posts)} Reddit posts — processing...")
+        posts = reddit.fetch_topic(query, subreddits, progress_cb=progress, seen_urls=seen_urls)
+        self.call_from_thread(self._status, f"{prefix}Fetched {len(posts)} Reddit posts (deduped) — processing...")
+
+        max_upvotes = max((p.get("score", 0) for p in posts), default=1)
 
         for i, post in enumerate(posts):
             post_id = db.save_post(topic_id, post)
-            # Judge relevance
-            score = llm.judge_relevance(post, query)
-            db.update_relevance(post_id, score)
+            llm_score = llm.judge_relevance(post, query, original_topic=original_topic)
+            hybrid = llm.blend_scores(llm_score, post.get("score", 0), max_upvotes)
+            db.update_relevance(post_id, hybrid)
             self.call_from_thread(
                 self._status,
-                f"{prefix}[Reddit] Judging {i+1}/{len(posts)}: {post['title'][:35]}... → {score:.0f}/10",
+                f"{prefix}[Reddit] {i+1}/{len(posts)}: {post['title'][:35]}... → {hybrid:.1f}/10",
             )
-            # Embed
             try:
                 embedding = llm.embed_post(post)
                 db.update_post_embedding(post_id, embedding)
             except Exception:
                 pass
-            # Summarize relevant posts
-            if score >= RELEVANCE_THRESHOLD:
+            if hybrid >= RELEVANCE_THRESHOLD:
                 try:
                     summary = llm.summarize_post(post)
                     if summary:
                         db.update_post_summary(post_id, summary)
-                        self.call_from_thread(
-                            self._status,
-                            f"{prefix}[Reddit] Summarized {i+1}/{len(posts)}: {post['title'][:35]}...",
-                        )
                 except Exception:
                     pass
 
         return len(posts)
 
-    def _fetch_and_process_web(self, topic_id: int, query: str, sites: list[str], tag: str = ""):
-        """Fetch web results for a query, then judge + embed + summarize. Returns result count."""
-        prefix = f"[{tag}] " if tag else ""
-        if not brave.is_configured():
-            self.call_from_thread(
-                self._status,
-                "Brave API key not set — skipping web search (add BRAVE_API_KEY to .env)",
-            )
-            return 0
+    def _fetch_all_web(self, query: str, sites: list[str]) -> list[dict]:
+        """Fire all configured search APIs in parallel, deduplicate by URL."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        self.call_from_thread(self._status, f"{prefix}Fetching Brave Search results...")
-        try:
-            web_results = self._search_web_for_sites(query, sites)
-        except Exception as e:
-            self.call_from_thread(self._status, f"[yellow]{prefix}Brave Search error: {e}[/yellow]")
+        tasks: list[tuple[str, callable]] = []
+        if brave.is_configured():
+            tasks.append(("brave", lambda q=query: self._search_web_for_sites(q, sites)))
+        if tavily_client.is_configured():
+            tasks.append(("tavily", lambda q=query: tavily_client.search(q, count=15)))
+        if serper_client.is_configured():
+            tasks.append(("serper", lambda q=query: serper_client.search(q, count=15)))
+        if exa_client.is_configured():
+            tasks.append(("exa", lambda q=query: exa_client.search(q, count=10)))
+
+        if not tasks:
+            return []
+
+        api_names = ", ".join(n for n, _ in tasks)
+        self.call_from_thread(self._status, f"Searching [{api_names}] in parallel...")
+
+        seen: set[str] = set()
+        combined: list[dict] = []
+
+        def _run(name, fn):
+            try:
+                results = fn()
+                for r in results:
+                    r.setdefault("source", name)
+                return results
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = {pool.submit(_run, name, fn): name for name, fn in tasks}
+            for fut in as_completed(futures):
+                for r in fut.result():
+                    url = r.get("url", "")
+                    if url and url not in seen:
+                        seen.add(url)
+                        combined.append(r)
+
+        return combined
+
+    def _fetch_and_process_web(self, topic_id: int, query: str, sites: list[str], tag: str = "", original_topic: str | None = None):
+        """Fetch web results from all APIs, then judge + embed + summarize. Returns result count."""
+        prefix = f"[{tag}] " if tag else ""
+
+        web_results = self._fetch_all_web(query, sites)
+        if not web_results:
+            self.call_from_thread(self._status, f"{prefix}No web APIs configured — skipping web search")
             return 0
 
         web_count = len(web_results)
-        self.call_from_thread(self._status, f"{prefix}Fetched {web_count} web results — processing...")
+        self.call_from_thread(self._status, f"{prefix}Fetched {web_count} unique web results — processing...")
 
         for i, result in enumerate(web_results):
             rid = db.save_web_result(topic_id, result)
-            score = llm.judge_web_relevance(result, query)
+            score = llm.judge_web_relevance(result, query, original_topic=original_topic)
             db.update_web_relevance(rid, score)
             self.call_from_thread(
                 self._status,
-                f"{prefix}[Web] Judging {i+1}/{web_count}: {result['title'][:35]}... → {score:.0f}/10",
+                f"{prefix}[Web] {i+1}/{web_count}: {result['title'][:35]}... → {score:.0f}/10",
             )
-            # Embed
             try:
                 embedding = llm.embed_web_result(result)
                 db.update_web_embedding(rid, embedding)
             except Exception:
                 pass
-            # Summarize relevant results
             if score >= RELEVANCE_THRESHOLD:
                 try:
                     summary = llm.summarize_web_result(result)
                     if summary:
                         db.update_web_summary(rid, summary)
-                        self.call_from_thread(
-                            self._status,
-                            f"{prefix}[Web] Summarized {i+1}/{web_count}: {result['title'][:35]}...",
-                        )
                 except Exception:
                     pass
 
@@ -878,14 +913,11 @@ class ResearchApp(App):
         self._subs_manually_edited = False
         self.call_from_thread(self._update_subreddit_mode_badge)
 
-        # --- Query expansion ---
-        self.call_from_thread(self._status, "Expanding query...")
-        queries = llm.expand_query(query)
-        if len(queries) > 1:
-            self.call_from_thread(
-                self._status,
-                f"Expanded to {len(queries)} queries: {' | '.join(q[:40] for q in queries)}",
-            )
+        # --- Query expansion + topic decomposition ---
+        self.call_from_thread(self._status, "Expanding query and decomposing sub-questions...")
+        expanded = llm.expand_query(query)
+        sub_questions = llm.decompose_topic(query)
+        queries = list(dict.fromkeys(expanded + sub_questions))  # dedupe, preserve order
         self.call_from_thread(
             self._status,
             f"Research plan → {len(queries)} queries × {len(subreddits)} subreddits × {len(auto_sites)} sites",
@@ -896,13 +928,15 @@ class ResearchApp(App):
         self._session_id = db.get_or_create_session(topic_id)
         self.call_from_thread(self._reload_topics)
 
-        # --- Pass 1: Fetch with original + expanded queries ---
+        seen_reddit_urls: set[str] = set()
+
+        # --- Pass 1: Fetch with original + expanded + sub-questions ---
         total_posts = 0
         total_web = 0
         for qi, q in enumerate(queries):
             tag = f"Q{qi+1}/{len(queries)}"
-            total_posts += self._fetch_and_process_posts(topic_id, q, subreddits, tag=tag)
-            total_web += self._fetch_and_process_web(topic_id, q, auto_sites, tag=tag)
+            total_posts += self._fetch_and_process_posts(topic_id, q, subreddits, tag=tag, seen_urls=seen_reddit_urls)
+            total_web += self._fetch_and_process_web(topic_id, q, auto_sites, tag=tag, original_topic=query)
 
         db.mark_topic_fetched(topic_id)
         self.call_from_thread(self._reload_posts, topic_id)
