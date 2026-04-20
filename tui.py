@@ -461,7 +461,9 @@ class ResearchApp(App):
                 pane.add_class("hidden")
                 button.remove_class("tab-button-active")
 
-    def _auto_subreddits_for_query(self, query: str) -> list[str]:
+    def _auto_subreddits_for_query(self, query: str, llm_fallback: bool = False) -> list[str]:
+        """Keyword-based subreddit suggestion (safe to call on main thread).
+        Pass llm_fallback=True only from a background worker thread."""
         normalized = query.lower().strip()
         scored: list[tuple[int, int, str]] = []
 
@@ -480,13 +482,14 @@ class ResearchApp(App):
                 scored.append((score, index, subreddit))
 
         if not scored:
-            # No keyword match — ask LLM to suggest relevant subreddits
-            try:
-                suggested = llm.suggest_subreddits(query, num=6)
-                if suggested:
-                    return suggested
-            except Exception:
-                pass
+            if llm_fallback:
+                # Only call LLM when running in a background thread
+                try:
+                    suggested = llm.suggest_subreddits(query, num=6)
+                    if suggested:
+                        return suggested
+                except Exception:
+                    pass
             return DEFAULT_SUBREDDITS[:4]
 
         scored.sort(key=lambda item: (-item[0], item[1]))
@@ -901,7 +904,8 @@ class ResearchApp(App):
 
         persona = self.query_one("#persona-input", Input).value.strip() or None
         subs_raw = self.query_one("#subs-input", Input).value.strip()
-        auto_subs, auto_sites = self._plan_research_targets(query)
+        auto_subs = self._auto_subreddits_for_query(query, llm_fallback=True)
+        auto_sites = self._auto_sites_for_query(query)
         subreddits = [s.strip() for s in subs_raw.split(",") if s.strip()] if subs_raw else auto_subs
         if not subs_raw:
             self.call_from_thread(
