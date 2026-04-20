@@ -57,6 +57,7 @@ from config import (
 
 
 AUTO_SUBREDDIT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    # Tech
     "sysadmin": (
         "sysadmin", "admin", "server", "servers", "infrastructure", "network", "dns",
         "backup", "monitoring", "vpn", "proxy", "firewall", "storage", "raid",
@@ -86,6 +87,56 @@ AUTO_SUBREDDIT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "commandline": (
         "command line", "cli", "shell", "terminal", "bash", "zsh", "sed", "awk", "grep", "ssh",
     ),
+    # Travel
+    "travel": (
+        "travel", "trip", "vacation", "holiday", "visit", "country", "countries",
+        "tourist", "tourism", "abroad", "international", "passport", "visa",
+    ),
+    "solotravel": (
+        "solo travel", "solo trip", "traveling alone", "first time travel", "new traveler",
+        "backpack", "backpacking", "budget travel", "hostel",
+    ),
+    "digitalnomad": (
+        "digital nomad", "remote work abroad", "work while traveling", "nomad",
+    ),
+    # Finance / Career
+    "personalfinance": (
+        "money", "finance", "budget", "saving", "investing", "debt", "salary", "income",
+        "retirement", "401k", "credit", "loan", "mortgage",
+    ),
+    "financialindependence": (
+        "fire", "financial independence", "retire early", "passive income", "frugal",
+    ),
+    "careerguidance": (
+        "career", "job", "resume", "interview", "salary negotiation", "career change",
+        "career advice", "job search", "promotion",
+    ),
+    "cscareerquestions": (
+        "software engineer", "developer", "coding job", "tech job", "swe", "programming career",
+    ),
+    # Health / Fitness
+    "fitness": (
+        "fitness", "workout", "gym", "exercise", "weight loss", "muscle", "training",
+    ),
+    "nutrition": (
+        "nutrition", "diet", "eating", "food", "calories", "meal", "supplements",
+    ),
+    "mentalhealth": (
+        "mental health", "anxiety", "depression", "stress", "therapy", "wellbeing",
+    ),
+    # General
+    "AskReddit": (
+        "what do people think", "best way to", "opinions on", "recommend", "advice",
+        "experience with", "thoughts on",
+    ),
+    "datascience": (
+        "data science", "data analysis", "machine learning", "python", "pandas",
+        "data analyst", "data engineer", "analytics",
+    ),
+    "programming": (
+        "programming", "coding", "software", "code", "developer", "development",
+        "algorithm", "api", "framework", "library",
+    ),
 }
 
 AUTO_WEBSITE_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -102,6 +153,9 @@ AUTO_WEBSITE_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 DEFAULT_WEB_SITES = ["reddit.com", "github.com", "serverfault.com", "stackoverflow.com"]
+
+# Full subreddit pool used for keyword scoring (order doesn't matter)
+_ALL_KNOWN_SUBREDDITS = list(AUTO_SUBREDDIT_KEYWORDS.keys())
 
 
 class PostItem(ListItem):
@@ -465,25 +519,20 @@ class ResearchApp(App):
         """Keyword-based subreddit suggestion (safe to call on main thread).
         Pass llm_fallback=True only from a background worker thread."""
         normalized = query.lower().strip()
-        scored: list[tuple[int, int, str]] = []
+        scored: list[tuple[int, str]] = []
 
-        for index, subreddit in enumerate(DEFAULT_SUBREDDITS):
+        for subreddit in _ALL_KNOWN_SUBREDDITS:
             score = 0
-            sub_key = subreddit.lower().replace(" ", "")
-            compact_query = re.sub(r"[^a-z0-9]+", "", normalized)
-            if sub_key and sub_key in compact_query:
-                score += 5
-
             for keyword in AUTO_SUBREDDIT_KEYWORDS.get(subreddit, ()):
                 if keyword in normalized:
                     score += 2
-
+            if subreddit.lower() in normalized:
+                score += 5
             if score:
-                scored.append((score, index, subreddit))
+                scored.append((score, subreddit))
 
         if not scored:
             if llm_fallback:
-                # Only call LLM when running in a background thread
                 try:
                     suggested = llm.suggest_subreddits(query, num=6)
                     if suggested:
@@ -492,8 +541,8 @@ class ResearchApp(App):
                     pass
             return DEFAULT_SUBREDDITS[:4]
 
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        return [subreddit for _, _, subreddit in scored[:5]]
+        scored.sort(key=lambda x: -x[0])
+        return [sub for _, sub in scored[:6]]
 
     def _auto_sites_for_query(self, query: str) -> list[str]:
         normalized = query.lower().strip()

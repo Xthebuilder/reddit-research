@@ -249,17 +249,22 @@ def suggest_subreddits(topic: str, num: int = 6) -> list[str]:
         {
             "role": "system",
             "content": (
-                "You are a Reddit expert. Given a research topic, suggest the best real, active "
-                "subreddits to find high-quality discussion and answers. "
-                "Return only subreddit names — no r/ prefix, no descriptions. "
+                "You are a Reddit expert. Given a research topic, suggest the best subreddits "
+                "to find high-quality discussion and answers. "
+                "ONLY suggest subreddits you are certain exist and have over 100k subscribers. "
+                "Common examples: travel→travel,solotravel,backpacking; "
+                "finance→personalfinance,financialindependence; "
+                "career→careerguidance,cscareerquestions; "
+                "health→fitness,nutrition,mentalhealth. "
+                "Return only the subreddit name with no r/ prefix and no descriptions. "
                 "Output ONLY a JSON array of strings, nothing else."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Best subreddits to research: \"{topic}\"\n"
-                f"Return {num} subreddit names as ONLY a JSON array: [\"sub1\", \"sub2\"]"
+                f"Best subreddits for: \"{topic}\"\n"
+                f"Return {num} real subreddit names as ONLY a JSON array: [\"sub1\", \"sub2\"]"
             ),
         },
     ]

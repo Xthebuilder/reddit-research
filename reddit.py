@@ -169,6 +169,8 @@ def subreddit_exists(subreddit: str) -> bool:
         return False
 
 
+_SAFE_FALLBACKS = ["travel", "solotravel", "backpacking", "AskReddit", "explainlikeimfive"]
+
 def filter_valid_subreddits(subreddits: list[str]) -> list[str]:
     """Remove subreddits that don't exist or are inaccessible."""
     valid = []
@@ -177,7 +179,10 @@ def filter_valid_subreddits(subreddits: list[str]) -> list[str]:
             valid.append(sub)
         else:
             log.warning("subreddit r/%s not found or inaccessible — skipping", sub)
-    return valid or subreddits  # fallback to original list if all fail
+    if not valid:
+        log.warning("all suggested subreddits failed validation — using safe fallbacks")
+        return [s for s in _SAFE_FALLBACKS if subreddit_exists(s)][:4]
+    return valid
 
 
 def use_praw() -> bool:

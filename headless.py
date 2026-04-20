@@ -38,35 +38,51 @@ from config import MAX_RESEARCH_ITERATIONS, RELEVANCE_THRESHOLD, validate  # noq
 
 # ── Subreddit auto-selection (lifted from tui.py) ───────────────────────────
 AUTO_SUBREDDIT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    # Tech
     "sysadmin": (
         "sysadmin", "admin", "server", "servers", "infrastructure", "network", "dns",
         "backup", "monitoring", "vpn", "proxy", "firewall", "storage", "raid",
     ),
-    "linux": (
-        "linux", "kernel", "distro", "desktop", "wayland", "x11", "package", "packages",
-    ),
+    "linux": ("linux", "kernel", "distro", "desktop", "wayland", "x11", "package", "packages"),
     "selfhosted": (
         "self-hosted", "selfhosted", "docker", "compose", "container", "containers",
         "kubernetes", "k8s", "service", "homelab", "nas", "media server", "plex", "jellyfin",
     ),
-    "homelab": (
-        "homelab", "home lab", "proxmox", "vm", "virtual machine", "backup", "nas", "storage",
-    ),
-    "LocalLLaMA": (
-        "llm", "local llama", "ollama", "lm studio", "langchain", "rag", "ai", "model", "models",
-    ),
-    "linuxquestions": (
-        "help", "how do i", "how to", "error", "fix", "install", "configure", "setup",
-    ),
+    "homelab": ("homelab", "home lab", "proxmox", "vm", "virtual machine", "backup", "nas", "storage"),
+    "LocalLLaMA": ("llm", "local llama", "ollama", "lm studio", "langchain", "rag", "ai", "model", "models"),
+    "linuxquestions": ("help", "how do i", "how to", "error", "fix", "install", "configure", "setup"),
     "archlinux": ("arch", "pacman", "aur", "arch linux", "archlinux"),
     "debian": ("debian", "apt", "apt-get", "ubuntu", "mint"),
     "commandline": ("command line", "cli", "shell", "terminal", "bash", "zsh", "ssh"),
+    "programming": ("programming", "coding", "software", "code", "developer", "algorithm", "api"),
+    "datascience": ("data science", "data analysis", "machine learning", "pandas", "data analyst", "analytics"),
+    # Travel
+    "travel": (
+        "travel", "trip", "vacation", "holiday", "visit", "country", "countries",
+        "tourist", "tourism", "abroad", "international", "passport", "visa",
+    ),
+    "solotravel": (
+        "solo travel", "solo trip", "traveling alone", "first time travel", "new traveler",
+        "backpack", "backpacking", "budget travel", "hostel",
+    ),
+    "digitalnomad": ("digital nomad", "remote work abroad", "work while traveling", "nomad"),
+    # Finance / Career
+    "personalfinance": (
+        "money", "finance", "budget", "saving", "investing", "debt", "salary",
+        "retirement", "401k", "credit", "loan", "mortgage",
+    ),
+    "financialindependence": ("fire", "financial independence", "retire early", "passive income", "frugal"),
+    "careerguidance": ("career", "job", "resume", "interview", "salary negotiation", "career advice", "job search"),
+    "cscareerquestions": ("software engineer", "developer", "coding job", "tech job", "swe", "programming career"),
+    # Health / Fitness
+    "fitness": ("fitness", "workout", "gym", "exercise", "weight loss", "muscle", "training"),
+    "nutrition": ("nutrition", "diet", "eating", "food", "calories", "meal", "supplements"),
+    "mentalhealth": ("mental health", "anxiety", "depression", "stress", "therapy", "wellbeing"),
+    # General
+    "AskReddit": ("what do people think", "best way to", "opinions on", "recommend", "advice", "thoughts on"),
 }
 
-DEFAULT_SUBREDDITS = [
-    "sysadmin", "linux", "selfhosted", "homelab", "LocalLLaMA",
-    "linuxquestions", "archlinux", "debian", "commandline",
-]
+DEFAULT_SUBREDDITS = list(AUTO_SUBREDDIT_KEYWORDS.keys())
 
 AUTO_WEBSITE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "reddit.com": ("reddit", "subreddit", "thread"),
@@ -80,27 +96,25 @@ DEFAULT_WEB_SITES = ["reddit.com", "github.com", "serverfault.com", "stackoverfl
 
 def _auto_subreddits(query: str) -> list[str]:
     normalized = query.lower().strip()
-    scored = []
-    for idx, sub in enumerate(DEFAULT_SUBREDDITS):
+    scored: list[tuple[int, str]] = []
+    for sub in DEFAULT_SUBREDDITS:
         score = 0
-        compact = re.sub(r"[^a-z0-9]+", "", normalized)
-        if sub.lower().replace(" ", "") in compact:
-            score += 5
         for kw in AUTO_SUBREDDIT_KEYWORDS.get(sub, ()):
             if kw in normalized:
                 score += 2
+        if sub.lower() in normalized:
+            score += 5
         if score:
-            scored.append((score, idx, sub))
+            scored.append((score, sub))
     if not scored:
-        # No keyword match — use LLM to suggest relevant subreddits
-        status("No keyword match for subreddits — asking LLM for suggestions...")
+        status("No keyword match — asking LLM for subreddit suggestions...")
         suggested = llm.suggest_subreddits(query, num=6)
         if suggested:
-            status(f"LLM suggested subreddits: {', '.join(suggested)}")
+            status(f"LLM suggested: {', '.join(suggested)}")
             return suggested
-        return DEFAULT_SUBREDDITS[:4]
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    return [s for _, _, s in scored[:5]]
+        return list(DEFAULT_SUBREDDITS)[:4]
+    scored.sort(key=lambda x: -x[0])
+    return [s for _, s in scored[:6]]
 
 
 def _auto_sites(query: str) -> list[str]:
