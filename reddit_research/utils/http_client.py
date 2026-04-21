@@ -2,7 +2,7 @@
 Shared httpx client with connection pooling + retry-aware transport.
 
 Usage:
-    from http_client import get_client
+    from reddit_research.utils.http_client import get_client
     r = get_client().get(url, params=params, timeout=15)
 
 Call `close_client()` at shutdown (registered via atexit automatically).

@@ -30,25 +30,12 @@ dev = [
 ]
 
 [project.scripts]
-reddit-research = "research:main"
-reddit-research-headless = "headless:main"
+reddit-research = "reddit_research.__main__:main"
+reddit-research-headless = "reddit_research.headless:main"
 
-[tool.setuptools]
-py-modules = [
-    "research",
-    "headless",
-    "tui",
-    "db",
-    "reddit",
-    "brave",
-    "llm",
-    "report",
-    "config",
-    "env_loader",
-    "logging_config",
-    "http_client",
-    "_version",
-]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reddit_research*"]
 
 [tool.ruff]
 line-length = 100

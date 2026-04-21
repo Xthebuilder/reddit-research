@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 def test_build_context_orders_by_relevance():
-    import llm
+    from reddit_research import llm
     posts = [
         {"title": "low", "subreddit": "x", "url": "u1", "score": 1, "relevance_score": 1, "comments": []},
         {"title": "high", "subreddit": "x", "url": "u2", "score": 2, "relevance_score": 9, "comments": []},
@@ -13,7 +13,7 @@ def test_build_context_orders_by_relevance():
 
 
 def test_build_context_uses_summary_over_content():
-    import llm
+    from reddit_research import llm
     posts = [{
         "title": "t", "subreddit": "x", "url": "u", "score": 1,
         "relevance_score": 5, "summary": "SUMMARY_HERE",

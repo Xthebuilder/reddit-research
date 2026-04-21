@@ -31,7 +31,8 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 def load_env(extra_paths: list[Path] | None = None) -> list[Path]:
     """Load .env from project dir + any extras. Returns the paths actually loaded."""
-    project_env = Path(__file__).parent / ".env"
+    # __file__ is reddit_research/utils/env_loader.py → parents[2] is project root
+    project_env = Path(__file__).parents[2] / ".env"
     paths: list[Path] = [project_env]
 
     shared = os.getenv("JRVS_ENV_PATH")

@@ -6,8 +6,10 @@ def test_validate_returns_status(tmp_path, monkeypatch):
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
     import sys
-    sys.modules.pop("config", None)
-    import config
+    for m in list(sys.modules):
+        if "reddit_research" in m:
+            sys.modules.pop(m)
+    from reddit_research import config
 
     logs: list[str] = []
     status = config.validate(log=logs.append)
@@ -18,5 +20,5 @@ def test_validate_returns_status(tmp_path, monkeypatch):
 
 
 def test_version_exposed():
-    from _version import __version__
+    from reddit_research._version import __version__
     assert __version__.count(".") == 2

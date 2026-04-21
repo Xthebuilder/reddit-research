@@ -57,7 +57,7 @@ def test_save_post_upserts_same_reddit_id(tmp_db):
 
 
 def test_cosine_similarity():
-    from db import _cosine_similarity
+    from reddit_research.db import _cosine_similarity
     assert _cosine_similarity([1, 0], [1, 0]) == 1.0
     assert _cosine_similarity([1, 0], [0, 1]) == 0.0
     assert _cosine_similarity([], [1]) == 0.0

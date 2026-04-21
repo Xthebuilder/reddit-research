@@ -4,9 +4,10 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
-from _version import __version__
+from reddit_research._version import __version__
 
-BASE_DIR = Path(__file__).parent
+# Project root — two levels up from this file (reddit_research/config.py)
+BASE_DIR = Path(__file__).parent.parent
 
 
 def _xdg_data_home() -> Path:
@@ -14,9 +15,8 @@ def _xdg_data_home() -> Path:
 
 
 def _default_db_path() -> str:
-    # Preserve backwards compat: if a project-local research.db exists,
-    # keep using it. Only new installs go to the XDG location.
-    legacy = Path(__file__).parent / "research.db"
+    # Preserve backwards compat: if a project-local research.db exists, keep using it.
+    legacy = BASE_DIR / "research.db"
     if legacy.exists():
         return str(legacy)
     data_dir = _xdg_data_home() / "reddit-research"
@@ -24,9 +24,17 @@ def _default_db_path() -> str:
     return str(data_dir / "research.db")
 
 
+# Inference backend: "ollama" (default) or "llama_cpp"
+INFERENCE_BACKEND = os.getenv("INFERENCE_BACKEND", "ollama")
+
 # Ollama
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
+
+# llama.cpp server (llama-server)
+LLAMA_CPP_BASE_URL = os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080")
+LLAMA_CPP_MODEL = os.getenv("LLAMA_CPP_MODEL", "")
+LLAMA_CPP_N_GPU_LAYERS = int(os.getenv("LLAMA_CPP_N_GPU_LAYERS", "99"))
 
 # Reddit API (optional — falls back to public JSON if not set)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
@@ -61,7 +69,7 @@ DEFAULT_SUBREDDITS = [
 MAX_POSTS_PER_SUB = int(os.getenv("MAX_POSTS_PER_SUB", "10"))
 MAX_COMMENTS_PER_POST = int(os.getenv("MAX_COMMENTS_PER_POST", "5"))
 RELEVANCE_THRESHOLD = int(os.getenv("RELEVANCE_THRESHOLD", "5"))
-CONTEXT_POSTS = int(os.getenv("CONTEXT_POSTS", "8"))
+CONTEXT_POSTS = int(os.getenv("CONTEXT_POSTS", "15"))
 
 # Embeddings
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
@@ -107,7 +115,11 @@ def validate(log: Callable[[str], None] = print) -> dict[str, bool]:
 
     log(f"reddit-research {__version__}")
     log(f"  DB path         : {DB_PATH} ({'writable' if status['db_writable'] else 'READ-ONLY'})")
-    log(f"  Ollama          : {OLLAMA_BASE_URL} (model: {OLLAMA_MODEL})")
+    log(f"  Inference       : {INFERENCE_BACKEND.upper()}")
+    if INFERENCE_BACKEND == "llama_cpp":
+        log(f"  llama.cpp       : {LLAMA_CPP_BASE_URL} (gpu_layers: {LLAMA_CPP_N_GPU_LAYERS})")
+    else:
+        log(f"  Ollama          : {OLLAMA_BASE_URL} (model: {OLLAMA_MODEL})")
     log(f"  Reddit API      : {'PRAW (authenticated)' if status['reddit_api'] else 'public JSON (rate-limited)'}")
     log(f"  Brave Search    : {'configured' if status['brave_api'] else 'not configured'}")
     log(f"  Tavily Search   : {'configured' if status['tavily_api'] else 'not configured'}")

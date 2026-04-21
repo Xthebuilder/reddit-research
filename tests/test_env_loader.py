@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from env_loader import _parse_env_file, load_env
+from reddit_research.utils.env_loader import _parse_env_file, load_env
 
 
 def test_parse_env_file_basic(tmp_path: Path):

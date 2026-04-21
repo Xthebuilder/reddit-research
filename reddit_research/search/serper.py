@@ -8,8 +8,8 @@ import os
 
 import httpx
 
-from http_client import get_client
-from logging_config import get_logger
+from reddit_research.utils.http_client import get_client
+from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 

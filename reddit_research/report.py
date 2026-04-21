@@ -1,15 +1,6 @@
 """
 Generates and auto-updates markdown research reports from the database.
-
 One .md file per topic, saved to REPORTS_DIR.
-Auto-updater polls DB mtime and regenerates stale reports in the background.
-
-Enhanced report template includes:
-- Executive Summary (LLM-generated key findings)
-- Key Themes (synthesized patterns)
-- Recommendations (actionable takeaways)
-- Detailed Sources (Reddit + Web)
-- Related Questions (from Q&A session)
 """
 import atexit
 import json
@@ -18,15 +9,14 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-import db
-import llm
-from config import BASE_DIR, RELEVANCE_THRESHOLD
-from logging_config import get_logger
+from reddit_research import db, llm
+from reddit_research.config import BASE_DIR, CONTEXT_POSTS, RELEVANCE_THRESHOLD
+from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(BASE_DIR / "reports")))
-POLL_INTERVAL = int(os.getenv("REPORT_POLL_INTERVAL", "60"))  # seconds
+POLL_INTERVAL = int(os.getenv("REPORT_POLL_INTERVAL", "60"))
 
 
 def _safe_filename(name: str) -> str:
@@ -38,19 +28,16 @@ def report_path(topic: dict) -> Path:
 
 
 def _safe_truncate(text: str, max_len: int = 1000) -> str:
-    """Safely truncate text for LLM context."""
     if len(text) > max_len:
         return text[:max_len] + "..."
     return text
 
 
 def _generate_summary(topic_name: str, posts: list, web_results: list) -> str:
-    """Use LLM to generate executive summary from top sources."""
     if not posts and not web_results:
         return "No sources available to summarize."
 
     try:
-        # Build brief context from top sources
         context_parts = []
         for p in posts[:5]:
             context_parts.append(f"• {p['title']} (r/{p['subreddit']}, score: {p['score']})")
@@ -64,7 +51,7 @@ def _generate_summary(topic_name: str, posts: list, web_results: list) -> str:
 
         context_text = "\n".join(context_parts)
 
-        prompt = f"""Based on the following research sources about "{topic_name}", 
+        prompt = f"""Based on the following research sources about "{topic_name}", \
 provide a concise executive summary (3-4 sentences) with the top 2-3 key findings.
 Be specific and actionable.
 
@@ -81,18 +68,11 @@ Executive Summary:"""
 
 
 def _extract_themes(topic_name: str, posts: list, web_results: list) -> str:
-    """Extract common themes/patterns from the sources."""
     if not posts and not web_results:
         return "No sources available for theme extraction."
 
     try:
-        # Collect titles and key snippets
-        titles = []
-        for p in posts[:10]:
-            titles.append(p['title'])
-        for r in web_results[:10]:
-            titles.append(r['title'])
-
+        titles = [p['title'] for p in posts[:10]] + [r['title'] for r in web_results[:10]]
         titles_text = "\n".join([f"- {t}" for t in titles])
 
         prompt = f"""Analyze the following titles and sources about "{topic_name}".
@@ -112,7 +92,6 @@ Key Themes:"""
 
 
 def _detect_comparison_topic(topic_name: str) -> bool:
-    """Return True if the topic looks like a comparison/ranking/options query."""
     keywords = [
         "best", "top", "vs", "versus", "compare", "comparison", "alternatives",
         "countries", "options", "which", "ranking", "recommend", "should i",
@@ -122,7 +101,6 @@ def _detect_comparison_topic(topic_name: str) -> bool:
 
 
 def _generate_comparison_table(topic_name: str, posts: list, web_results: list) -> str:
-    """Generate a structured markdown comparison table from the top sources."""
     context_parts: list[str] = []
     for p in posts[:8]:
         text = p.get("summary") or p.get("content", "")
@@ -149,7 +127,6 @@ def _generate_comparison_table(topic_name: str, posts: list, web_results: list) 
 
 
 def _extract_entity_sentiment(topic_name: str, posts: list, web_results: list) -> str:
-    """Extract entities and community sentiment from all sources."""
     snippets: list[str] = []
     for p in posts[:12]:
         snippets.append(p.get("summary") or p["title"])
@@ -173,12 +150,10 @@ def _extract_entity_sentiment(topic_name: str, posts: list, web_results: list) -
 
 
 def _generate_recommendations(topic_name: str, posts: list, web_results: list, qa_content: str = "") -> str:
-    """Generate actionable recommendations based on sources."""
     if not posts and not web_results:
         return "No sources available for recommendations."
 
     try:
-        # Build context from top sources
         context_parts = []
         for p in posts[:8]:
             context_parts.append(f"Reddit - {p['title']}")
@@ -209,8 +184,45 @@ Recommendations:"""
         return "_Recommendations unavailable (LLM error). Review sources and Q&A below for insights._"
 
 
-def generate(topic_id: int) -> Path:
-    """Generate (or regenerate) the markdown report for a topic. Returns the file path."""
+def _generate_direct_answer(question: str, posts: list, web_results: list) -> str:
+    """Generate a direct, grounded answer to the research question using the best sources."""
+    top_posts = posts[:CONTEXT_POSTS]
+    top_web = web_results[:CONTEXT_POSTS]
+
+    context_parts: list[str] = []
+    for i, p in enumerate(top_posts, 1):
+        text = p.get("summary") or p.get("content", "")
+        context_parts.append(f"[Reddit {i}] r/{p['subreddit']} — {p['title']}\n{text[:400]}")
+        if p.get("comments"):
+            context_parts.append("Top comment: " + p["comments"][0][:200])
+    for i, r in enumerate(top_web, 1):
+        text = r.get("summary") or r.get("description", "")
+        context_parts.append(f"[Web {i}] {r['title']}\n{text[:400]}")
+
+    context = "\n\n".join(context_parts)
+
+    prompt = (
+        f"Answer the following research question as completely and specifically as possible, "
+        f"citing the sources provided. Use [Reddit N] and [Web N] inline citations.\n\n"
+        f"Question: {question}\n\n"
+        f"Sources:\n{context}\n\n"
+        "Provide a thorough, structured answer with concrete details from the sources. "
+        "If sources conflict, note the disagreement. Prioritize specifics over generalities."
+    )
+    try:
+        return llm.ask(prompt).strip()
+    except Exception:
+        log.exception("_generate_direct_answer failed for %r", question)
+        return "_Direct answer unavailable (LLM error)._"
+
+
+def generate(topic_id: int, question: str | None = None) -> Path:
+    """Generate (or regenerate) the markdown report for a topic.
+
+    If `question` is provided, the report leads with a direct answer section
+    built from semantically retrieved sources rather than just top-scored ones.
+    Returns the file path.
+    """
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     topic = db.get_topic(topic_id)
@@ -224,6 +236,20 @@ def generate(topic_id: int) -> Path:
     web = db.get_web_results(topic_id, min_relevance=-1)
     relevant_web = [r for r in web if r.get("relevance_score", -1) >= RELEVANCE_THRESHOLD]
     all_web = sorted(web, key=lambda r: r.get("relevance_score", 0), reverse=True)
+
+    # Use semantic retrieval when a question is available — gets the *most relevant*
+    # sources for this specific question rather than just the highest-scored ones.
+    if question and (all_posts or all_web):
+        try:
+            q_emb = llm.embed(question)
+            sem_posts = db.vector_search_posts(topic_id, q_emb, top_k=CONTEXT_POSTS) or all_posts
+            sem_web = db.vector_search_web(topic_id, q_emb, top_k=CONTEXT_POSTS) or all_web
+        except Exception:
+            sem_posts = all_posts
+            sem_web = all_web
+    else:
+        sem_posts = all_posts
+        sem_web = all_web
 
     session_id = db.get_or_create_session(topic_id)
     messages = db.get_messages(session_id, limit=100)
@@ -244,54 +270,53 @@ def generate(topic_id: int) -> Path:
         "",
     ]
 
-    # --- Executive Summary ---
-    lines += [
-        "## 📌 Executive Summary",
-        "",
-    ]
+    # Direct answer section — only present when a question was provided.
+    # Uses semantically retrieved sources so the answer is grounded in the
+    # most relevant content, not just the highest-scored posts.
+    if question and (sem_posts or sem_web):
+        lines += [f"## 💡 Direct Answer: {question}", ""]
+        lines.append(_generate_direct_answer(question, sem_posts, sem_web))
+        lines += ["", "---", ""]
+
+    lines += ["## 📌 Executive Summary", ""]
     if all_posts or all_web:
-        summary = _generate_summary(topic['name'], all_posts[:10], all_web[:10])
+        summary = _generate_summary(topic['name'], sem_posts[:10], sem_web[:10])
         lines.append(summary)
     else:
         lines.append("_No sources available to generate summary._")
     lines += ["", "---", ""]
 
-    # --- Key Themes ---
     lines += ["## 🎯 Key Themes", ""]
     if all_posts or all_web:
-        themes = _extract_themes(topic['name'], all_posts[:10], all_web[:10])
+        themes = _extract_themes(topic['name'], sem_posts[:10], sem_web[:10])
         lines.append(themes)
     else:
         lines.append("_No sources available to extract themes._")
     lines += ["", "---", ""]
 
-    # --- Entity Sentiment ---
     lines += ["## 🧭 Community Sentiment by Entity", ""]
     if all_posts or all_web:
-        sentiment = _extract_entity_sentiment(topic['name'], all_posts[:12], all_web[:8])
+        sentiment = _extract_entity_sentiment(topic['name'], sem_posts[:12], sem_web[:8])
         lines.append(sentiment if sentiment else "_Sentiment extraction unavailable._")
     else:
         lines.append("_No sources available._")
     lines += ["", "---", ""]
 
-    # --- Comparison Table (for ranking/comparison topics) ---
     if _detect_comparison_topic(topic['name']) and (all_posts or all_web):
         lines += ["## 📊 Comparison Table", ""]
-        table = _generate_comparison_table(topic['name'], all_posts[:8], all_web[:5])
+        table = _generate_comparison_table(topic['name'], sem_posts[:8], sem_web[:5])
         lines.append(table if table else "_Comparison table unavailable._")
         lines += ["", "---", ""]
 
-    # --- Recommendations ---
     lines += ["## ✅ Recommendations", ""]
     if all_posts or all_web:
-        qa_snippets = " | ".join([m['content'][:100] for m in messages if m['role'] == 'user'][:3])
-        recommendations = _generate_recommendations(topic['name'], all_posts[:10], all_web[:10], qa_snippets)
+        qa_snippets = question or " | ".join([m['content'][:100] for m in messages if m['role'] == 'user'][:3])
+        recommendations = _generate_recommendations(topic['name'], sem_posts[:10], sem_web[:10], qa_snippets)
         lines.append(recommendations)
     else:
         lines.append("_No sources available to generate recommendations._")
     lines += ["", "---", ""]
 
-    # --- Reddit sources (detailed) ---
     lines += ["## 📖 Detailed Sources", ""]
     lines += ["### Reddit Posts", ""]
     if not all_posts:
@@ -314,7 +339,6 @@ def generate(topic_id: int) -> Path:
                     lines.append(f"> {c[:250]}")
             lines.append("")
 
-    # --- Web sources (detailed) ---
     lines += ["### Web Sources", ""]
     if not all_web:
         lines.append("_No web results fetched yet._")
@@ -333,7 +357,6 @@ def generate(topic_id: int) -> Path:
                     lines.append(f"> {s[:250]}")
             lines.append("")
 
-    # --- Q&A Session ---
     lines += ["---", "", "## 💬 Questions & Answers", ""]
     if not messages:
         lines.append("_No questions asked yet._")
@@ -364,17 +387,8 @@ def generate_all() -> list[Path]:
     return paths
 
 
-# ---------------------------------------------------------------------------
-# Auto-updater: background thread watches DB mtime, regenerates on change
-# ---------------------------------------------------------------------------
-
 class ReportWatcher:
     def __init__(self, on_update=None):
-        """
-        on_update(topic_name, path) is called after each report is regenerated.
-        Registers an atexit hook so the watcher thread is stopped cleanly
-        even if the caller forgets to call stop().
-        """
         self._on_update = on_update
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -390,12 +404,11 @@ class ReportWatcher:
 
     def stop(self):
         self._stop.set()
-        # Give the loop one poll interval to see the stop flag and exit.
         if self._thread.is_alive():
             self._thread.join(timeout=max(2, POLL_INTERVAL // 10))
 
     def _run(self):
-        from config import DB_PATH
+        from reddit_research.config import DB_PATH
         db_path = Path(DB_PATH)
         while not self._stop.wait(POLL_INTERVAL):
             try:
@@ -407,7 +420,6 @@ class ReportWatcher:
                 self._last_mtime = mtime
                 for topic in db.list_topics():
                     rpath = report_path(topic)
-                    # regenerate if report doesn't exist or DB is newer
                     if not rpath.exists() or mtime > rpath.stat().st_mtime:
                         try:
                             path = generate(topic["id"])

@@ -1,4 +1,4 @@
-"""Unit tests for brave.py."""
+"""Unit tests for search/brave.py."""
 from __future__ import annotations
 
 import pytest
@@ -7,24 +7,26 @@ import pytest
 def test_is_configured_false(monkeypatch):
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     import sys
-    for m in ("config", "brave"):
-        sys.modules.pop(m, None)
-    import brave
+    for m in list(sys.modules):
+        if "reddit_research" in m:
+            sys.modules.pop(m)
+    from reddit_research.search import brave
     assert brave.is_configured() is False
 
 
 def test_search_raises_without_key(monkeypatch):
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     import sys
-    for m in ("config", "brave"):
-        sys.modules.pop(m, None)
-    import brave
+    for m in list(sys.modules):
+        if "reddit_research" in m:
+            sys.modules.pop(m)
+    from reddit_research.search import brave
     with pytest.raises(RuntimeError):
         brave.search("anything")
 
 
 def test_parse_items_shape():
-    import brave
+    from reddit_research.search import brave
     sample = {"web": {"results": [
         {"title": " T ", "url": "u", "description": " d ", "extra_snippets": ["s"], "age": "1d"}
     ]}}

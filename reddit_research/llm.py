@@ -1,13 +1,12 @@
 """
-Ollama API wrapper.
-- ask()               → single completion
-- judge_relevance()   → LLM-as-judge: scores a post 0-10 for relevance
-- build_context()     → formats posts into an LLM context block
-- answer()            → RAG-style answer grounded in fetched posts
-- embed()             → generate embeddings via Ollama
-- expand_query()      → query expansion/reformulation
-- summarize_content() → intelligent summarization before storage
-- analyze_gaps()      → identify gaps for iterative research
+LLM interface — supports Ollama (default) and llama.cpp backends.
+- check_ollama / list_models   → backend health
+- embed / embed_post / embed_web_result → embeddings
+- expand_query / correct_query / decompose_topic / suggest_subreddits → query ops
+- judge_relevance / judge_web_relevance / blend_scores → relevance scoring
+- summarize_post / summarize_web_result → intelligent summarization
+- analyze_gaps → iterative research gap detection
+- build_context / answer / ask → RAG pipeline
 """
 from __future__ import annotations
 
@@ -16,16 +15,17 @@ import re
 
 import httpx
 
-from config import (
+from reddit_research.config import (
     CONTEXT_POSTS,
     DEFAULT_PERSONA,
+    INFERENCE_BACKEND,
     MAX_EXPANDED_QUERIES,
     OLLAMA_BASE_URL,
     OLLAMA_EMBED_MODEL,
     OLLAMA_MODEL,
 )
-from http_client import LONG_TIMEOUT, get_client
-from logging_config import get_logger
+from reddit_research.utils.http_client import LONG_TIMEOUT, get_client
+from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 
@@ -33,7 +33,18 @@ _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 _EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
 
 
+# ---------------------------------------------------------------------------
+# Backend routing — Ollama (default) or llama.cpp
+# ---------------------------------------------------------------------------
+
+def _using_llama_cpp() -> bool:
+    return INFERENCE_BACKEND.lower() == "llama_cpp"
+
+
 def _chat(messages: list[dict], stream: bool = False, **kwargs) -> str:
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return lc.chat(messages, **kwargs)
     payload = {
         "model": OLLAMA_MODEL,
         "messages": messages,
@@ -47,6 +58,9 @@ def _chat(messages: list[dict], stream: bool = False, **kwargs) -> str:
 
 def _chat_stream(messages: list[dict], on_token=None):
     """Stream tokens; calls on_token(chunk) for each chunk. Returns full text."""
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return lc.chat_stream(messages, on_token=on_token)
     payload = {"model": OLLAMA_MODEL, "messages": messages, "stream": True}
     full: list[str] = []
     with get_client().stream("POST", _CHAT_URL, json=payload, timeout=LONG_TIMEOUT) as r:
@@ -69,7 +83,10 @@ def _chat_stream(messages: list[dict], on_token=None):
 
 
 def check_ollama() -> tuple[bool, str]:
-    """Returns (ok, message)."""
+    """Returns (ok, message). Works for both backends."""
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return lc.check()
     try:
         r = get_client().get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
         r.raise_for_status()
@@ -81,6 +98,9 @@ def check_ollama() -> tuple[bool, str]:
 
 
 def list_models() -> list[str]:
+    if _using_llama_cpp():
+        from reddit_research.config import LLAMA_CPP_MODEL
+        return [LLAMA_CPP_MODEL] if LLAMA_CPP_MODEL else ["llama.cpp (model loaded on server)"]
     try:
         r = get_client().get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
         r.raise_for_status()
@@ -95,7 +115,9 @@ def list_models() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def embed(text: str) -> list[float]:
-    """Generate an embedding vector for the given text using Ollama."""
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return lc.embed(text)
     payload = {"model": OLLAMA_EMBED_MODEL, "input": text}
     r = get_client().post(_EMBED_URL, json=payload, timeout=60)
     r.raise_for_status()
@@ -107,7 +129,6 @@ def embed(text: str) -> list[float]:
 
 
 def embed_post(post: dict) -> list[float]:
-    """Create an embedding from a post's key content."""
     text = post["title"]
     if post.get("content"):
         text += "\n" + post["content"][:500]
@@ -117,7 +138,6 @@ def embed_post(post: dict) -> list[float]:
 
 
 def embed_web_result(result: dict) -> list[float]:
-    """Create an embedding from a web result's key content."""
     text = result["title"]
     if result.get("description"):
         text += "\n" + result["description"][:500]
@@ -131,11 +151,6 @@ def embed_web_result(result: dict) -> list[float]:
 # ---------------------------------------------------------------------------
 
 def expand_query(query: str, num_queries: int | None = None) -> list[str]:
-    """
-    Given a user query, generate expanded/reformulated search queries
-    using synonyms, related terms, and sub-questions.
-    Returns a list of queries (always includes the original).
-    """
     n = num_queries or MAX_EXPANDED_QUERIES
     messages = [
         {
@@ -169,11 +184,7 @@ def expand_query(query: str, num_queries: int | None = None) -> list[str]:
 
 
 def correct_query(text: str) -> tuple[str, bool]:
-    """
-    Spell-correct a query using pyspellchecker.
-    Returns (corrected_text, was_changed).
-    Preserves capitalisation and punctuation; skips short tokens and URLs.
-    """
+    """Spell-correct a query using pyspellchecker. Returns (corrected_text, was_changed)."""
     try:
         from spellchecker import SpellChecker  # type: ignore
         spell = SpellChecker()
@@ -181,14 +192,12 @@ def correct_query(text: str) -> tuple[str, bool]:
         corrected = []
         changed = False
         for word in words:
-            # Strip surrounding punctuation for checking
             stripped = word.strip(".,!?;:\"'()")
             if not stripped or len(stripped) < 3 or stripped.startswith("http"):
                 corrected.append(word)
                 continue
             candidate = spell.correction(stripped.lower())
             if candidate and candidate != stripped.lower():
-                # Preserve original casing style
                 if stripped.isupper():
                     candidate = candidate.upper()
                 elif stripped[0].isupper():
@@ -205,18 +214,13 @@ def correct_query(text: str) -> tuple[str, bool]:
 
 
 def decompose_topic(topic: str) -> list[str]:
-    """
-    Break a broad topic into specific, targeted sub-questions.
-    Each sub-question is independently searchable and covers a distinct angle.
-    Returns a list of sub-questions (empty on failure).
-    """
+    """Break a broad topic into specific, targeted sub-questions."""
     messages = [
         {
             "role": "system",
             "content": (
                 "You are a research strategist. Break a broad research topic into 3-4 "
                 "specific, independently searchable sub-questions that together give complete coverage. "
-                "Sub-questions must be concrete and specific to the user's context — not generic. "
                 "Output ONLY a JSON array of strings, nothing else."
             ),
         },
@@ -241,10 +245,7 @@ def decompose_topic(topic: str) -> list[str]:
 
 
 def suggest_subreddits(topic: str, num: int = 6) -> list[str]:
-    """
-    Use LLM to suggest the best subreddits for a given topic.
-    Returns subreddit names without the r/ prefix.
-    """
+    """Use LLM to suggest the best subreddits for a given topic."""
     messages = [
         {
             "role": "system",
@@ -252,10 +253,6 @@ def suggest_subreddits(topic: str, num: int = 6) -> list[str]:
                 "You are a Reddit expert. Given a research topic, suggest the best subreddits "
                 "to find high-quality discussion and answers. "
                 "ONLY suggest subreddits you are certain exist and have over 100k subscribers. "
-                "Common examples: travel→travel,solotravel,backpacking; "
-                "finance→personalfinance,financialindependence; "
-                "career→careerguidance,cscareerquestions; "
-                "health→fitness,nutrition,mentalhealth. "
                 "Return only the subreddit name with no r/ prefix and no descriptions. "
                 "Output ONLY a JSON array of strings, nothing else."
             ),
@@ -289,7 +286,6 @@ def suggest_subreddits(topic: str, num: int = 6) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def summarize_post(post: dict) -> str:
-    """Summarize a Reddit post into a concise, information-dense paragraph."""
     snippet = post["title"]
     if post.get("content"):
         snippet += "\n" + post["content"][:800]
@@ -316,7 +312,6 @@ def summarize_post(post: dict) -> str:
 
 
 def summarize_web_result(result: dict) -> str:
-    """Summarize a web result into a concise, information-dense paragraph."""
     snippet = result["title"]
     if result.get("description"):
         snippet += "\n" + result["description"][:800]
@@ -346,10 +341,7 @@ def summarize_web_result(result: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def analyze_gaps(topic: str, posts: list[dict], web_results: list[dict]) -> list[str]:
-    """
-    Analyze existing research and identify gaps — returns follow-up queries
-    for a second pass of research.
-    """
+    """Identify research gaps and return follow-up queries for a second pass."""
     source_titles: list[str] = []
     for p in posts[:10]:
         source_titles.append(f"Reddit: {p['title']}")
@@ -368,8 +360,7 @@ def analyze_gaps(topic: str, posts: list[dict], web_results: list[dict]) -> list
                 "You are a research analyst. Given a topic and the sources already found, "
                 "identify what's MISSING — gaps in coverage, unanswered sub-questions, "
                 "alternative perspectives not yet explored. "
-                "Output ONLY a JSON array of 2-3 follow-up search queries that would "
-                "fill these gaps. Output nothing else."
+                "Output ONLY a JSON array of 2-3 follow-up search queries. Output nothing else."
             ),
         },
         {
@@ -377,7 +368,7 @@ def analyze_gaps(topic: str, posts: list[dict], web_results: list[dict]) -> list
             "content": (
                 f"Topic: {topic}\n\n"
                 f"Sources already collected:\n{titles_text}\n\n"
-                "What follow-up queries would fill gaps in this research? "
+                "What follow-up queries would fill gaps? "
                 "Return ONLY a JSON array like: [\"query 1\", \"query 2\"]"
             ),
         },
@@ -395,7 +386,7 @@ def analyze_gaps(topic: str, posts: list[dict], web_results: list[dict]) -> list
 
 
 # ---------------------------------------------------------------------------
-# Relevance judging (original + hybrid with embeddings)
+# Relevance judging
 # ---------------------------------------------------------------------------
 
 def blend_scores(llm_score: float, upvotes: int, max_upvotes: int) -> float:
@@ -434,7 +425,6 @@ def _judge(snippet: str, topic: str, source_type: str = "content", original_topi
 
 
 def judge_relevance(post: dict, topic: str, original_topic: str | None = None) -> float:
-    """LLM-as-judge for a Reddit post. Returns 0.0-10.0."""
     snippet = post["title"]
     if post.get("content"):
         snippet += "\n" + post["content"][:400]
@@ -444,7 +434,6 @@ def judge_relevance(post: dict, topic: str, original_topic: str | None = None) -
 
 
 def judge_web_relevance(result: dict, topic: str, original_topic: str | None = None) -> float:
-    """LLM-as-judge for a Brave web result. Returns 0.0-10.0."""
     snippet = result["title"]
     if result.get("description"):
         snippet += "\n" + result["description"][:400]
@@ -454,7 +443,7 @@ def judge_web_relevance(result: dict, topic: str, original_topic: str | None = N
 
 
 # ---------------------------------------------------------------------------
-# Context building (now uses summaries when available)
+# Context building and RAG answer
 # ---------------------------------------------------------------------------
 
 def build_context(posts: list[dict], web_results: list[dict], topic: str) -> str:
@@ -499,10 +488,6 @@ def build_context(posts: list[dict], web_results: list[dict], topic: str) -> str
 
     return "\n".join(parts)
 
-
-# ---------------------------------------------------------------------------
-# RAG answer (now with configurable persona + semantic retrieval)
-# ---------------------------------------------------------------------------
 
 def answer(
     question: str,

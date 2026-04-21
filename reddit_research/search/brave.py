@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import httpx
 
-from config import BRAVE_API_KEY, BRAVE_MAX_RESULTS
-from http_client import get_client
-from logging_config import get_logger
+from reddit_research.config import BRAVE_API_KEY, BRAVE_MAX_RESULTS
+from reddit_research.utils.http_client import get_client
+from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 
@@ -33,10 +33,7 @@ def _parse_items(payload: dict) -> list[dict]:
 
 
 def search(query: str, count: int | None = None) -> list[dict]:
-    """
-    Search the web via Brave Search API.
-    Returns list of dicts: {title, url, description, extra_snippets, age}
-    """
+    """Search the web via Brave Search API."""
     if not is_configured():
         raise RuntimeError("BRAVE_API_KEY is not set")
 
@@ -48,7 +45,7 @@ def search(query: str, count: int | None = None) -> list[dict]:
     }
     params = {
         "q": query,
-        "count": min(n, 20),  # Brave API max per request is 20
+        "count": min(n, 20),
         "search_lang": "en",
         "result_filter": "web",
         "extra_snippets": "true",
@@ -59,7 +56,6 @@ def search(query: str, count: int | None = None) -> list[dict]:
     r.raise_for_status()
     results = _parse_items(r.json())
 
-    # If we need more than 20, paginate
     if n > 20:
         params["count"] = min(n - 20, 20)
         params["offset"] = 20

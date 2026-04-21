@@ -3,7 +3,7 @@ Centralized logging setup.
 
 Call `configure_logging()` once at process start. Everywhere else:
 
-    from logging_config import get_logger
+    from reddit_research.utils.logging_config import get_logger
     log = get_logger(__name__)
     log.info("message")
     log.exception("something blew up")  # inside except:
@@ -58,7 +58,6 @@ def configure_logging(level: str | None = None, to_file: bool = True) -> None:
             fh.setFormatter(logging.Formatter(_FMT, _DATEFMT))
             root.addHandler(fh)
         except OSError:
-            # Read-only FS or permissions — fall back to stderr only.
             pass
 
     logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -8,25 +8,21 @@ import time
 
 import httpx
 
-from config import (
+from reddit_research.config import (
     MAX_COMMENTS_PER_POST,
     MAX_POSTS_PER_SUB,
     REDDIT_CLIENT_ID,
     REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT,
 )
-from http_client import get_client
-from logging_config import get_logger
+from reddit_research.utils.http_client import get_client
+from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 
 _HEADERS = {"User-Agent": REDDIT_USER_AGENT}
 _BASE = "https://www.reddit.com"
 
-
-# ---------------------------------------------------------------------------
-# Public JSON fallback (no auth)
-# ---------------------------------------------------------------------------
 
 def _public_search(subreddit: str, query: str, limit: int, time_filter: str = "year") -> list[dict]:
     url = f"{_BASE}/r/{subreddit}/search.json"
@@ -46,7 +42,6 @@ def _public_search(subreddit: str, query: str, limit: int, time_filter: str = "y
 
 
 def _extract_comment_bodies(children: list, depth: int = 0, max_depth: int = 1) -> list[str]:
-    """Recursively extract comment bodies up to max_depth levels."""
     bodies: list[str] = []
     for child in children:
         if child.get("kind") != "t1":
@@ -99,10 +94,9 @@ def _parse_public_post(child: dict, subreddit: str, fetch_comments: bool = True)
 
     comments: list[str] = []
     if fetch_comments:
-        # Fetch deeper replies for high-engagement posts
         deep = num_comments > 50
         comments = _public_comments(subreddit, post_id, deep=deep)
-        time.sleep(0.5)  # be polite to Reddit's public API
+        time.sleep(0.5)
 
     return {
         "reddit_id": post_id,
@@ -115,10 +109,6 @@ def _parse_public_post(child: dict, subreddit: str, fetch_comments: bool = True)
         "comments": comments,
     }
 
-
-# ---------------------------------------------------------------------------
-# PRAW path (when credentials are available)
-# ---------------------------------------------------------------------------
 
 def _praw_search(subreddit: str, query: str, limit: int, time_filter: str = "year") -> list[dict]:
     import praw  # type: ignore
@@ -152,12 +142,7 @@ def _praw_search(subreddit: str, query: str, limit: int, time_filter: str = "yea
     return results
 
 
-# ---------------------------------------------------------------------------
-# Public interface
-# ---------------------------------------------------------------------------
-
 def subreddit_exists(subreddit: str) -> bool:
-    """Quick check if a subreddit exists and is accessible."""
     url = f"{_BASE}/r/{subreddit}/about.json"
     try:
         r = get_client().get(url, headers=_HEADERS, timeout=5)
@@ -170,6 +155,7 @@ def subreddit_exists(subreddit: str) -> bool:
 
 
 _SAFE_FALLBACKS = ["travel", "solotravel", "backpacking", "AskReddit", "explainlikeimfive"]
+
 
 def filter_valid_subreddits(subreddits: list[str]) -> list[str]:
     """Remove subreddits that don't exist or are inaccessible."""
@@ -216,7 +202,6 @@ def fetch_topic(
     """
     Fetch posts across multiple subreddits, deduplicating by URL across calls.
     progress_cb(subreddit, done, total) is called after each subreddit.
-    Pass seen_urls to share dedup state across multiple fetch_topic calls.
     """
     if seen_urls is None:
         seen_urls = set()
@@ -234,5 +219,5 @@ def fetch_topic(
             all_posts.append(post)
         if progress_cb:
             progress_cb(sub, i + 1, len(subreddits))
-        time.sleep(1)  # rate limit courtesy pause
+        time.sleep(1)
     return all_posts

@@ -3,7 +3,7 @@ import math
 import sqlite3
 from datetime import datetime, timezone
 
-from config import DB_PATH
+from reddit_research.config import DB_PATH
 
 
 def _now_iso() -> str:
@@ -77,7 +77,6 @@ def init_db():
                 created_at TEXT NOT NULL
             );
         """)
-        # Migrate existing tables: add new columns if missing
         _migrate_add_column(conn, "posts", "embedding", "TEXT")
         _migrate_add_column(conn, "posts", "summary", "TEXT")
         _migrate_add_column(conn, "posts", "num_comments", "INTEGER DEFAULT 0")
@@ -87,7 +86,6 @@ def init_db():
 
 
 def _migrate_add_column(conn, table: str, column: str, col_type: str):
-    """Add a column if it doesn't already exist (safe for re-runs)."""
     cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
@@ -107,7 +105,6 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def vector_search_posts(topic_id: int, query_embedding: list[float], top_k: int = 10) -> list[dict]:
-    """Find the most semantically similar posts to a query embedding."""
     posts = get_posts(topic_id, min_relevance=-1, limit=200)
     scored = []
     for p in posts:
@@ -121,7 +118,6 @@ def vector_search_posts(topic_id: int, query_embedding: list[float], top_k: int 
 
 
 def vector_search_web(topic_id: int, query_embedding: list[float], top_k: int = 10) -> list[dict]:
-    """Find the most semantically similar web results to a query embedding."""
     results = get_web_results(topic_id, min_relevance=-1, limit=200)
     scored = []
     for r in results:

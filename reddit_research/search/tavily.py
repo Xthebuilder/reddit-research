@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from logging_config import get_logger
+from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 
