@@ -30,6 +30,12 @@ INFERENCE_BACKEND = os.getenv("INFERENCE_BACKEND", "ollama")
 # Ollama
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
+# Fast model: judging, summarizing, query expansion (cheap tasks)
+OLLAMA_FAST_MODEL = os.getenv("OLLAMA_FAST_MODEL", "gemma3:12b")
+# Smart model: gap analysis, report synthesis, RAG answers (reasoning tasks)
+OLLAMA_SMART_MODEL = os.getenv("OLLAMA_SMART_MODEL", "gpt-oss:20b")
+# How many posts/results to process in parallel (matches Ollama's num_parallel setting)
+OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "4"))
 
 # llama.cpp server (llama-server)
 LLAMA_CPP_BASE_URL = os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080")
@@ -72,7 +78,7 @@ RELEVANCE_THRESHOLD = int(os.getenv("RELEVANCE_THRESHOLD", "5"))
 CONTEXT_POSTS = int(os.getenv("CONTEXT_POSTS", "15"))
 
 # Embeddings
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "mxbai-embed-large")
 
 # Persona (configurable per-topic or globally)
 DEFAULT_PERSONA = os.getenv(

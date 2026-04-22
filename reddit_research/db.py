@@ -1,6 +1,7 @@
 import json
 import math
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from reddit_research.config import DB_PATH
@@ -11,11 +12,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+@contextmanager
+def get_conn():
+    """Open a connection, yield it, commit, then CLOSE it — prevents fd leaks."""
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    conn.execute("PRAGMA busy_timeout=30000")  # wait up to 30s on lock
+    conn.execute("PRAGMA synchronous=NORMAL")  # safe + faster than FULL
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -312,6 +324,54 @@ def get_web_results(topic_id: int, min_relevance: float = -1, limit: int = 50) -
             d["extra_snippets"] = json.loads(d["extra_snippets"] or "[]")
             result.append(d)
         return result
+
+
+# --- Checkpoint / resume helpers ---
+
+def get_post_processing_state(post_id: int) -> dict:
+    """Return current relevance_score, embedding, summary for a post — used to skip re-work."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT relevance_score, embedding, summary FROM posts WHERE id=?", (post_id,)
+        ).fetchone()
+        return dict(row) if row else {"relevance_score": -1, "embedding": None, "summary": None}
+
+
+def get_web_processing_state(result_id: int) -> dict:
+    """Return current relevance_score, embedding, summary for a web result."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT relevance_score, embedding, summary FROM web_results WHERE id=?", (result_id,)
+        ).fetchone()
+        return dict(row) if row else {"relevance_score": -1, "embedding": None, "summary": None}
+
+
+def clear_embeddings(topic_id: int | None = None):
+    """Wipe stored embeddings so they get re-computed with the current model.
+    Call this after changing OLLAMA_EMBED_MODEL to avoid dimension mismatches.
+    Pass topic_id to clear only one topic, or None to clear all.
+    """
+    with get_conn() as conn:
+        if topic_id is None:
+            conn.execute("UPDATE posts SET embedding=NULL")
+            conn.execute("UPDATE web_results SET embedding=NULL")
+        else:
+            conn.execute("UPDATE posts SET embedding=NULL WHERE topic_id=?", (topic_id,))
+            conn.execute("UPDATE web_results SET embedding=NULL WHERE topic_id=?", (topic_id,))
+
+
+def get_existing_post_urls(topic_id: int) -> set[str]:
+    """All Reddit URLs already stored for this topic — lets headless resume skip re-fetching."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT url FROM posts WHERE topic_id=?", (topic_id,)).fetchall()
+        return {r["url"] for r in rows}
+
+
+def get_existing_web_urls(topic_id: int) -> set[str]:
+    """All web URLs already stored for this topic."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT url FROM web_results WHERE topic_id=?", (topic_id,)).fetchall()
+        return {r["url"] for r in rows}
 
 
 # --- Sessions & messages ---

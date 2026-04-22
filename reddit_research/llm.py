@@ -22,7 +22,9 @@ from reddit_research.config import (
     MAX_EXPANDED_QUERIES,
     OLLAMA_BASE_URL,
     OLLAMA_EMBED_MODEL,
+    OLLAMA_FAST_MODEL,
     OLLAMA_MODEL,
+    OLLAMA_SMART_MODEL,
 )
 from reddit_research.utils.http_client import LONG_TIMEOUT, get_client
 from reddit_research.utils.logging_config import get_logger
@@ -56,12 +58,34 @@ def _chat(messages: list[dict], stream: bool = False, **kwargs) -> str:
     return r.json()["message"]["content"].strip()
 
 
+def _chat_fast(messages: list[dict], **kwargs) -> str:
+    """Use the fast model (gemma3:12b) for cheap tasks: judging, summarizing, query ops."""
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return lc.chat(messages, **kwargs)
+    payload = {"model": OLLAMA_FAST_MODEL, "messages": messages, "stream": False, **kwargs}
+    r = get_client().post(_CHAT_URL, json=payload, timeout=LONG_TIMEOUT)
+    r.raise_for_status()
+    return r.json()["message"]["content"].strip()
+
+
+def _chat_smart(messages: list[dict], **kwargs) -> str:
+    """Use the smart model (gpt-oss:20b) for reasoning tasks: gap analysis, synthesis, RAG."""
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return lc.chat(messages, **kwargs)
+    payload = {"model": OLLAMA_SMART_MODEL, "messages": messages, "stream": False, **kwargs}
+    r = get_client().post(_CHAT_URL, json=payload, timeout=LONG_TIMEOUT)
+    r.raise_for_status()
+    return r.json()["message"]["content"].strip()
+
+
 def _chat_stream(messages: list[dict], on_token=None):
-    """Stream tokens; calls on_token(chunk) for each chunk. Returns full text."""
+    """Stream tokens using the smart model. Returns full text."""
     if _using_llama_cpp():
         from reddit_research import llama_cpp_client as lc
         return lc.chat_stream(messages, on_token=on_token)
-    payload = {"model": OLLAMA_MODEL, "messages": messages, "stream": True}
+    payload = {"model": OLLAMA_SMART_MODEL, "messages": messages, "stream": True}
     full: list[str] = []
     with get_client().stream("POST", _CHAT_URL, json=payload, timeout=LONG_TIMEOUT) as r:
         r.raise_for_status()
@@ -119,13 +143,37 @@ def embed(text: str) -> list[float]:
         from reddit_research import llama_cpp_client as lc
         return lc.embed(text)
     payload = {"model": OLLAMA_EMBED_MODEL, "input": text}
-    r = get_client().post(_EMBED_URL, json=payload, timeout=60)
+    r = get_client().post(_EMBED_URL, json=payload, timeout=LONG_TIMEOUT)
     r.raise_for_status()
     data = r.json()
     embeddings = data.get("embeddings", [])
     if embeddings and isinstance(embeddings[0], list):
         return embeddings[0]
     return embeddings
+
+
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    """Embed many texts in a single Ollama call. Returns one vector per input.
+
+    Falls back to per-text embed() on error so the pipeline never loses data
+    over a transient batch failure.
+    """
+    if not texts:
+        return []
+    if _using_llama_cpp():
+        from reddit_research import llama_cpp_client as lc
+        return [lc.embed(t) for t in texts]
+    try:
+        payload = {"model": OLLAMA_EMBED_MODEL, "input": texts}
+        r = get_client().post(_EMBED_URL, json=payload, timeout=LONG_TIMEOUT)
+        r.raise_for_status()
+        vectors = r.json().get("embeddings", [])
+        if len(vectors) == len(texts):
+            return vectors
+        log.warning("embed_batch: got %d vectors for %d inputs — falling back", len(vectors), len(texts))
+    except Exception:
+        log.exception("embed_batch failed, falling back to per-text embed")
+    return [embed(t) for t in texts]
 
 
 def embed_post(post: dict) -> list[float]:
@@ -171,7 +219,7 @@ def expand_query(query: str, num_queries: int | None = None) -> list[str]:
         },
     ]
     try:
-        result = _chat(messages)
+        result = _chat_fast(messages)
         match = re.search(r"\[.*\]", result, re.DOTALL)
         if match:
             queries = json.loads(match.group())
@@ -233,7 +281,7 @@ def decompose_topic(topic: str) -> list[str]:
         },
     ]
     try:
-        result = _chat(messages)
+        result = _chat_fast(messages)
         match = re.search(r"\[.*\]", result, re.DOTALL)
         if match:
             questions = json.loads(match.group())
@@ -266,7 +314,7 @@ def suggest_subreddits(topic: str, num: int = 6) -> list[str]:
         },
     ]
     try:
-        result = _chat(messages)
+        result = _chat_fast(messages)
         match = re.search(r"\[.*\]", result, re.DOTALL)
         if match:
             subs = json.loads(match.group())
@@ -305,7 +353,7 @@ def summarize_post(post: dict) -> str:
         {"role": "user", "content": snippet},
     ]
     try:
-        return _chat(messages)
+        return _chat_fast(messages)
     except Exception:
         log.exception("summarize_post failed for %s", post.get("reddit_id"))
         return ""
@@ -330,7 +378,7 @@ def summarize_web_result(result: dict) -> str:
         {"role": "user", "content": snippet},
     ]
     try:
-        return _chat(messages)
+        return _chat_fast(messages)
     except Exception:
         log.exception("summarize_web_result failed for %s", result.get("url"))
         return ""
@@ -374,7 +422,7 @@ def analyze_gaps(topic: str, posts: list[dict], web_results: list[dict]) -> list
         },
     ]
     try:
-        result = _chat(messages)
+        result = _chat_smart(messages)
         match = re.search(r"\[.*\]", result, re.DOTALL)
         if match:
             queries = json.loads(match.group())
@@ -415,7 +463,7 @@ def _judge(snippet: str, topic: str, source_type: str = "content", original_topi
         {"role": "user", "content": f"{context}\n\nSnippet:\n{snippet}"},
     ]
     try:
-        result = _chat(messages)
+        result = _chat_fast(messages)
         match = re.search(r"\d+", result)
         if match:
             return min(10.0, max(0.0, float(match.group())))
@@ -515,7 +563,7 @@ def answer(
 
     if on_token:
         return _chat_stream(messages, on_token=on_token)
-    return _chat(messages)
+    return _chat_smart(messages)
 
 
 def ask(prompt: str, on_token=None) -> str:
@@ -523,4 +571,21 @@ def ask(prompt: str, on_token=None) -> str:
     messages = [{"role": "user", "content": prompt}]
     if on_token:
         return _chat_stream(messages, on_token=on_token)
-    return _chat(messages)
+    return _chat_smart(messages)
+
+
+def unload_models() -> None:
+    """Tell Ollama to evict all loaded models from VRAM immediately."""
+    if _using_llama_cpp():
+        return
+    for model in (OLLAMA_FAST_MODEL, OLLAMA_SMART_MODEL, OLLAMA_EMBED_MODEL):
+        if not model:
+            continue
+        try:
+            get_client().post(
+                _CHAT_URL,
+                json={"model": model, "messages": [], "keep_alive": 0},
+                timeout=5,
+            )
+        except Exception:
+            pass  # best-effort, don't crash the pipeline over this

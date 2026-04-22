@@ -24,21 +24,42 @@ _HEADERS = {"User-Agent": REDDIT_USER_AGENT}
 _BASE = "https://www.reddit.com"
 
 
+def _get_with_backoff(url: str, params: dict | None = None, attempts: int = 4) -> httpx.Response | None:
+    """GET with exponential backoff on 403/429. Honors Retry-After when present."""
+    delay = 2.0
+    for attempt in range(attempts):
+        try:
+            r = get_client().get(url, params=params, headers=_HEADERS)
+            if r.status_code in (403, 429):
+                retry_after = r.headers.get("Retry-After")
+                # Always sleep at least `delay` — Reddit sometimes sends Retry-After: 0
+                wait = max(delay, float(retry_after)) if retry_after is not None else delay
+                log.warning("reddit %s on %s — sleeping %.1fs (attempt %d/%d)",
+                            r.status_code, url, wait, attempt + 1, attempts)
+                time.sleep(min(wait, 60.0))
+                delay *= 2
+                continue
+            r.raise_for_status()
+            return r
+        except httpx.HTTPError:
+            log.exception("reddit transport error on %s", url)
+            time.sleep(delay)
+            delay *= 2
+    return None
+
+
 def _public_search(subreddit: str, query: str, limit: int, time_filter: str = "year") -> list[dict]:
     url = f"{_BASE}/r/{subreddit}/search.json"
     params = {"q": query, "restrict_sr": 1, "sort": "relevance", "limit": limit, "t": time_filter}
+    r = _get_with_backoff(url, params=params)
+    if r is None:
+        log.warning("reddit search gave up after retries for r/%s q=%r", subreddit, query)
+        return []
     try:
-        r = get_client().get(url, params=params, headers=_HEADERS)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("data", {}).get("children", [])
-    except httpx.HTTPStatusError as e:
-        log.warning("reddit search HTTP %s for r/%s q=%r", e.response.status_code, subreddit, query)
-    except httpx.HTTPError:
-        log.exception("reddit search transport error r/%s q=%r", subreddit, query)
+        return r.json().get("data", {}).get("children", [])
     except Exception:
-        log.exception("reddit search unexpected error r/%s q=%r", subreddit, query)
-    return []
+        log.exception("reddit search JSON parse failed r/%s q=%r", subreddit, query)
+        return []
 
 
 def _extract_comment_bodies(children: list, depth: int = 0, max_depth: int = 1) -> list[str]:
@@ -60,9 +81,10 @@ def _extract_comment_bodies(children: list, depth: int = 0, max_depth: int = 1) 
 
 def _public_comments(subreddit: str, post_id: str, deep: bool = False) -> list[str]:
     url = f"{_BASE}/r/{subreddit}/comments/{post_id}.json"
+    r = _get_with_backoff(url)
+    if r is None:
+        return []
     try:
-        r = get_client().get(url, headers=_HEADERS)
-        r.raise_for_status()
         data = r.json()
         if len(data) < 2:
             return []
@@ -70,13 +92,9 @@ def _public_comments(subreddit: str, post_id: str, deep: bool = False) -> list[s
         max_depth = 1 if deep else 0
         comments = _extract_comment_bodies(children[:MAX_COMMENTS_PER_POST * 2], max_depth=max_depth)
         return comments[:MAX_COMMENTS_PER_POST * (2 if deep else 1)]
-    except httpx.HTTPStatusError as e:
-        log.warning("reddit comments HTTP %s for %s/%s", e.response.status_code, subreddit, post_id)
-    except httpx.HTTPError:
-        log.exception("reddit comments transport error %s/%s", subreddit, post_id)
     except Exception:
-        log.exception("reddit comments unexpected error %s/%s", subreddit, post_id)
-    return []
+        log.exception("reddit comments JSON parse failed %s/%s", subreddit, post_id)
+        return []
 
 
 def _parse_public_post(child: dict, subreddit: str, fetch_comments: bool = True) -> dict | None:

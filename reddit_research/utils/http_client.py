@@ -19,7 +19,7 @@ _client: httpx.Client | None = None
 _lock = threading.Lock()
 
 DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=5.0, read=15.0, write=10.0)
-LONG_TIMEOUT = httpx.Timeout(120.0, connect=5.0, read=120.0, write=30.0)
+LONG_TIMEOUT = httpx.Timeout(300.0, connect=5.0, read=300.0, write=30.0)
 
 
 def _build_client(timeout: httpx.Timeout = DEFAULT_TIMEOUT) -> httpx.Client:

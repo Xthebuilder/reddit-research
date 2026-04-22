@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from reddit_research import db, llm
 from reddit_research.config import BRAVE_MAX_RESULTS, RELEVANCE_THRESHOLD
+from reddit_research.utils.resources import safe_worker_count
 from reddit_research.search import brave, exa, reddit, serper, tavily
 from reddit_research.ui.keywords import AUTO_WEBSITE_KEYWORDS, DEFAULT_SUBREDDITS, DEFAULT_WEB_SITES
 from reddit_research.utils.logging_config import get_logger
@@ -163,6 +164,105 @@ def fetch_all_web(
 # Core pipeline steps
 # ---------------------------------------------------------------------------
 
+def _post_embed_text(post: dict) -> str:
+    text = post["title"]
+    if post.get("content"):
+        text += "\n" + post["content"][:500]
+    if post.get("comments"):
+        text += "\n" + " ".join(c[:150] for c in post["comments"][:2])
+    return text
+
+
+def _web_embed_text(result: dict) -> str:
+    text = result["title"]
+    if result.get("description"):
+        text += "\n" + result["description"][:500]
+    if result.get("extra_snippets"):
+        text += "\n" + " ".join(s[:150] for s in result["extra_snippets"][:2])
+    return text
+
+
+def _judge_and_summarize_post(
+    post_id: int,
+    post: dict,
+    state: dict,
+    query: str,
+    original_topic: str | None,
+    max_upvotes: int,
+) -> tuple[str, float, bool]:
+    """Judge + summarize one post. Embedding handled separately by batch path."""
+    if state["relevance_score"] == -1:
+        llm_score = llm.judge_relevance(post, query, original_topic=original_topic)
+        hybrid = llm.blend_scores(llm_score, post.get("score", 0), max_upvotes)
+        db.update_relevance(post_id, hybrid)
+        fresh = True
+    else:
+        hybrid = state["relevance_score"]
+        fresh = False
+
+    if hybrid >= RELEVANCE_THRESHOLD and not state["summary"]:
+        try:
+            summary = llm.summarize_post(post)
+            if summary:
+                db.update_post_summary(post_id, summary)
+        except Exception:
+            log.exception("summarize_post failed for %s", post.get("reddit_id"))
+
+    return post["title"][:40], hybrid, fresh
+
+
+def _judge_and_summarize_web(
+    rid: int,
+    result: dict,
+    state: dict,
+    query: str,
+    original_topic: str | None,
+) -> tuple[str, float, bool]:
+    """Judge + summarize one web result. Embedding handled separately by batch path."""
+    if state["relevance_score"] == -1:
+        score = llm.judge_web_relevance(result, query, original_topic=original_topic)
+        db.update_web_relevance(rid, score)
+        fresh = True
+    else:
+        score = state["relevance_score"]
+        fresh = False
+
+    if score >= RELEVANCE_THRESHOLD and not state["summary"]:
+        try:
+            summary = llm.summarize_web_result(result)
+            if summary:
+                db.update_web_summary(rid, summary)
+        except Exception:
+            log.exception("summarize_web_result failed for %s", result.get("url"))
+
+    return result["title"][:40], score, fresh
+
+
+# Back-compat shims — headless._process_web_batch still calls _process_single_web
+def _process_single_post(topic_id, post, query, original_topic, max_upvotes):
+    post_id = db.save_post(topic_id, post)
+    state = db.get_post_processing_state(post_id)
+    if not state["embedding"]:
+        try:
+            db.update_post_embedding(post_id, llm.embed_post(post))
+        except Exception:
+            log.exception("embed_post failed for %s", post.get("reddit_id"))
+        state = db.get_post_processing_state(post_id)
+    return _judge_and_summarize_post(post_id, post, state, query, original_topic, max_upvotes)
+
+
+def _process_single_web(topic_id, result, query, original_topic):
+    rid = db.save_web_result(topic_id, result)
+    state = db.get_web_processing_state(rid)
+    if not state["embedding"]:
+        try:
+            db.update_web_embedding(rid, llm.embed_web_result(result))
+        except Exception:
+            log.exception("embed_web_result failed for %s", result.get("url"))
+        state = db.get_web_processing_state(rid)
+    return _judge_and_summarize_web(rid, result, state, query, original_topic)
+
+
 def fetch_and_process_posts(
     topic_id: int,
     query: str,
@@ -172,35 +272,56 @@ def fetch_and_process_posts(
     original_topic: str | None = None,
     seen_urls: set | None = None,
 ) -> int:
-    """Fetch Reddit posts, then judge + embed + summarize. Returns post count."""
+    """Fetch Reddit posts, then judge + embed + summarize in parallel. Returns post count."""
     prefix = f"[{tag}] " if tag else ""
 
     def reddit_progress(sub, done, total):
         progress(f"{prefix}Fetching r/{sub} ({done}/{total})...")
 
     posts = reddit.fetch_topic(query, subreddits, progress_cb=reddit_progress, seen_urls=seen_urls)
-    progress(f"{prefix}Fetched {len(posts)} Reddit posts (deduped) — processing...")
+    if not posts:
+        return 0
 
-    max_upvotes = max((p.get("score", 0) for p in posts), default=1)
-
-    for i, post in enumerate(posts):
+    # Step 1: persist all posts and snapshot processing state
+    saved: list[tuple[int, dict, dict]] = []
+    for post in posts:
         post_id = db.save_post(topic_id, post)
-        llm_score = llm.judge_relevance(post, query, original_topic=original_topic)
-        hybrid = llm.blend_scores(llm_score, post.get("score", 0), max_upvotes)
-        db.update_relevance(post_id, hybrid)
-        progress(f"{prefix}[Reddit] {i+1}/{len(posts)}: {post['title'][:35]}... → {hybrid:.1f}/10")
+        saved.append((post_id, post, db.get_post_processing_state(post_id)))
+
+    # Step 2: batch-embed everything that needs an embedding (one Ollama call)
+    need_embed = [(pid, p) for pid, p, s in saved if not s["embedding"]]
+    if need_embed:
+        progress(f"{prefix}Batch-embedding {len(need_embed)} posts in 1 API call...")
         try:
-            embedding = llm.embed_post(post)
-            db.update_post_embedding(post_id, embedding)
+            vectors = llm.embed_batch([_post_embed_text(p) for _, p in need_embed])
+            for (pid, _), vec in zip(need_embed, vectors):
+                if vec:
+                    db.update_post_embedding(pid, vec)
+            # refresh state so the judge step sees embeddings as present
+            saved = [(pid, p, db.get_post_processing_state(pid)) for pid, p, _ in saved]
         except Exception:
-            pass
-        if hybrid >= RELEVANCE_THRESHOLD:
+            log.exception("batch embed failed; falling back to per-item embeds in worker pool")
+
+    # Step 3: parallel judge + summarize
+    max_upvotes = max((p.get("score", 0) for p in posts), default=1) or 1
+    workers, worker_reason = safe_worker_count()
+    progress(f"{prefix}Judging+summarizing {len(saved)} Reddit posts — {worker_reason}")
+
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_judge_and_summarize_post, pid, p, s, query, original_topic, max_upvotes): p
+            for pid, p, s in saved
+        }
+        for fut in as_completed(futures):
+            done_count += 1
             try:
-                summary = llm.summarize_post(post)
-                if summary:
-                    db.update_post_summary(post_id, summary)
+                title, score, fresh = fut.result()
+                label = f"→ {score:.1f}/10" if fresh else f"→ {score:.1f}/10 (cached)"
+                progress(f"{prefix}[Reddit] {done_count}/{len(posts)}: {title}... {label}")
             except Exception:
-                pass
+                log.exception("post processing failed")
+                progress(f"{prefix}[Reddit] {done_count}/{len(posts)}: ERROR")
 
     return len(posts)
 
@@ -213,7 +334,7 @@ def fetch_and_process_web(
     tag: str = "",
     original_topic: str | None = None,
 ) -> int:
-    """Fetch web results from all APIs, then judge + embed + summarize. Returns result count."""
+    """Fetch web results from all APIs, then judge + embed + summarize in parallel."""
     prefix = f"[{tag}] " if tag else ""
 
     web_results = fetch_all_web(query, sites, progress)
@@ -222,24 +343,44 @@ def fetch_and_process_web(
         return 0
 
     web_count = len(web_results)
-    progress(f"{prefix}Fetched {web_count} unique web results — processing...")
 
-    for i, result in enumerate(web_results):
+    # Step 1: persist + snapshot state
+    saved: list[tuple[int, dict, dict]] = []
+    for result in web_results:
         rid = db.save_web_result(topic_id, result)
-        score = llm.judge_web_relevance(result, query, original_topic=original_topic)
-        db.update_web_relevance(rid, score)
-        progress(f"{prefix}[Web] {i+1}/{web_count}: {result['title'][:35]}... → {score:.0f}/10")
+        saved.append((rid, result, db.get_web_processing_state(rid)))
+
+    # Step 2: batch-embed everything that needs it
+    need_embed = [(rid, r) for rid, r, s in saved if not s["embedding"]]
+    if need_embed:
+        progress(f"{prefix}Batch-embedding {len(need_embed)} web results in 1 API call...")
         try:
-            embedding = llm.embed_web_result(result)
-            db.update_web_embedding(rid, embedding)
+            vectors = llm.embed_batch([_web_embed_text(r) for _, r in need_embed])
+            for (rid, _), vec in zip(need_embed, vectors):
+                if vec:
+                    db.update_web_embedding(rid, vec)
+            saved = [(rid, r, db.get_web_processing_state(rid)) for rid, r, _ in saved]
         except Exception:
-            pass
-        if score >= RELEVANCE_THRESHOLD:
+            log.exception("batch embed failed; falling back to per-item embeds in worker pool")
+
+    # Step 3: parallel judge + summarize
+    workers, worker_reason = safe_worker_count()
+    progress(f"{prefix}Judging+summarizing {web_count} web results — {worker_reason}")
+
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_judge_and_summarize_web, rid, r, s, query, original_topic): r
+            for rid, r, s in saved
+        }
+        for fut in as_completed(futures):
+            done_count += 1
             try:
-                summary = llm.summarize_web_result(result)
-                if summary:
-                    db.update_web_summary(rid, summary)
+                title, score, fresh = fut.result()
+                label = f"→ {score:.0f}/10" if fresh else f"→ {score:.0f}/10 (cached)"
+                progress(f"{prefix}[Web] {done_count}/{web_count}: {title}... {label}")
             except Exception:
-                pass
+                log.exception("web processing failed")
+                progress(f"{prefix}[Web] {done_count}/{web_count}: ERROR")
 
     return web_count

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# RESEARCH "your question here"
+# Runs the headless research pipeline, streams live progress, and prints the report.
+
+QUESTION="${*}"
+if [[ -z "$QUESTION" ]]; then
+    echo "Usage: RESEARCH <question>" >&2
+    exit 1
+fi
+
+PROJECT_DIR="/home/xavier/Desktop/reddit-research"
+PYTHON="$PROJECT_DIR/.venv/bin/python"
+REPORTS_DIR="${REPORTS_DIR:-$HOME/research}"
+
+mkdir -p "$REPORTS_DIR"
+export REPORTS_DIR
+cd "$PROJECT_DIR" || { echo "Cannot cd to $PROJECT_DIR" >&2; exit 1; }
+
+# Use a FIFO so we can track the Python PID and kill it cleanly on exit
+TMPFIFO=$(mktemp -u /tmp/research-XXXXXX)
+mkfifo "$TMPFIFO"
+
+PY_PID=""
+
+_cleanup() {
+    if [[ -n "$PY_PID" ]]; then
+        kill -TERM "$PY_PID" 2>/dev/null
+        wait "$PY_PID" 2>/dev/null
+    fi
+    rm -f "$TMPFIFO"
+}
+
+_interrupt() {
+    echo ""
+    echo "  Interrupted — pipeline stopped and cleaned up."
+    _cleanup
+    exit 130
+}
+
+trap '_cleanup' EXIT
+trap '_interrupt' INT TERM
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  RESEARCH: $QUESTION"
+echo "  Saving to: $REPORTS_DIR"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Start Python writing to the FIFO, capture PID
+"$PYTHON" -m reddit_research.headless --topic "$QUESTION" >"$TMPFIFO" 2>&1 &
+PY_PID=$!
+
+REPORT_PATH=""
+
+# Stream from the FIFO, strip [STATUS] prefix for clean display
+while IFS= read -r line; do
+    if [[ "$line" == REPORT_PATH:* ]]; then
+        REPORT_PATH="${line#REPORT_PATH:}"
+    elif [[ "$line" == "[STATUS]"* ]]; then
+        echo "  ${line#\[STATUS\] }"
+    else
+        echo "$line"
+    fi
+done < "$TMPFIFO"
+
+# Wait for Python to finish and get its exit code
+wait "$PY_PID"
+PY_EXIT=$?
+PY_PID=""  # already exited, don't try to kill again in _cleanup
+
+echo ""
+
+if [[ $PY_EXIT -ne 0 ]] || [[ -z "$REPORT_PATH" ]]; then
+    echo "ERROR: Pipeline failed (exit $PY_EXIT). Check ~/.local/state/reddit-research/app.log" >&2
+    exit 1
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Print the report — use bat if available, else cat
+if command -v bat &>/dev/null; then
+    bat --style=plain --paging=never --language=markdown "$REPORT_PATH"
+else
+    cat "$REPORT_PATH"
+fi
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Saved → $REPORT_PATH"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""

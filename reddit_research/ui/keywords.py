@@ -71,6 +71,36 @@ AUTO_SUBREDDIT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "mentalhealth": (
         "mental health", "anxiety", "depression", "stress", "therapy", "wellbeing",
     ),
+    # Science / Psychology / General knowledge
+    "science": (
+        "science", "scientific", "study", "studies", "research", "biology", "chemistry",
+        "physics", "neuroscience", "brain", "cognitive", "cognition", "neurology",
+        "frontal lobe", "prefrontal", "cortex", "neurodevelopment", "neuroimaging",
+        "mri", "hormone", "hormones", "puberty", "genetics", "evolution",
+    ),
+    "psychology": (
+        "psychology", "psychological", "mental", "maturity", "mature", "maturation",
+        "behavior", "behaviour", "emotion", "emotions", "emotional", "impulse",
+        "risk-taking", "decision making", "executive function", "personality",
+        "development", "developmental", "gender differences", "sex differences",
+        "cognitive development", "adolescent", "adolescence", "childhood",
+    ),
+    "askscience": (
+        "how does", "why do", "what causes", "what is the science", "explain",
+        "mechanism", "evidence", "proven", "hypothesis",
+    ),
+    "explainlikeimfive": (
+        "explain", "eli5", "simple", "layman", "understand", "what does", "how does",
+        "what is", "why is", "basics of",
+    ),
+    "relationship_advice": (
+        "relationship", "relationships", "dating", "partner", "spouse", "marriage",
+        "breakup", "love", "romantic", "jealousy",
+    ),
+    "socialskills": (
+        "social", "social skills", "introvert", "extrovert", "shyness", "awkward",
+        "communication", "conversation",
+    ),
     # General
     "AskReddit": (
         "what do people think", "best way to", "opinions on", "recommend", "advice",
