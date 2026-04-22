@@ -574,6 +574,43 @@ def ask(prompt: str, on_token=None) -> str:
     return _chat_smart(messages)
 
 
+def tag_domains(topic_name: str) -> list[str]:
+    """Return 1-3 domain slugs from KNOWN_DOMAINS that best fit the topic.
+    Uses the fast model with a constrained prompt to minimise hallucination.
+    """
+    from reddit_research.memory import KNOWN_DOMAINS
+    domain_list = ", ".join(KNOWN_DOMAINS)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a topic classifier. Given a research topic, pick the 1-3 most relevant "
+                "domain labels from the list provided. Output ONLY a JSON array of strings from "
+                "that exact list — no other words, no explanations."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Topic: \"{topic_name}\"\n\n"
+                f"Available domains: [{domain_list}]\n\n"
+                "Return ONLY a JSON array, e.g. [\"linux\", \"storage\"]"
+            ),
+        },
+    ]
+    try:
+        result = _chat_fast(messages)
+        match = re.search(r"\[.*?\]", result, re.DOTALL)
+        if match:
+            tags = json.loads(match.group())
+            if isinstance(tags, list):
+                valid = [t for t in tags if isinstance(t, str) and t in KNOWN_DOMAINS]
+                return valid[:3]
+    except Exception:
+        log.exception("tag_domains failed for %r", topic_name)
+    return ["general"]
+
+
 def unload_models() -> None:
     """Tell Ollama to evict all loaded models from VRAM immediately."""
     if _using_llama_cpp():

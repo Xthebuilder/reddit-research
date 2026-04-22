@@ -216,7 +216,7 @@ def _generate_direct_answer(question: str, posts: list, web_results: list) -> st
         return "_Direct answer unavailable (LLM error)._"
 
 
-def generate(topic_id: int, question: str | None = None) -> Path:
+def generate(topic_id: int, question: str | None = None, memory_stats: dict | None = None) -> Path:
     """Generate (or regenerate) the markdown report for a topic.
 
     If `question` is provided, the report leads with a direct answer section
@@ -259,6 +259,14 @@ def generate(topic_id: int, question: str | None = None) -> Path:
     if fetched and fetched != "never":
         fetched = fetched[:16].replace("T", " ") + " UTC"
 
+    # Memory banner — show if sources were injected from past sessions
+    injected = (memory_stats or {}).get("injected_sources") or db.get_memory_source_count(topic_id)
+    injected_topics = (memory_stats or {}).get("injected_topics", 0)
+    memory_line = ""
+    if injected:
+        sessions_label = f"{injected_topics} past session" + ("s" if injected_topics != 1 else "")
+        memory_line = f"**Memory:** Enriched with {injected} cached sources from {sessions_label}  "
+
     lines = [
         f"# Research Report: {topic['name']}",
         "",
@@ -267,8 +275,10 @@ def generate(topic_id: int, question: str | None = None) -> Path:
         f"**Reddit posts:** {len(posts)} collected, {len(relevant_posts)} above threshold ({RELEVANCE_THRESHOLD}/10)  ",
         f"**Web results:** {len(web)} collected, {len(relevant_web)} above threshold ({RELEVANCE_THRESHOLD}/10)  ",
         f"**Subreddits:** {', '.join(json.loads(topic['subreddits']))}",
-        "",
     ]
+    if memory_line:
+        lines.append(memory_line)
+    lines.append("")
 
     # Direct answer section — only present when a question was provided.
     # Uses semantically retrieved sources so the answer is grounded in the

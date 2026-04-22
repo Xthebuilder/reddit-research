@@ -88,6 +88,19 @@ def init_db():
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS domains (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS topic_domains (
+                topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+                PRIMARY KEY (topic_id, domain_id)
+            );
+
         """)
         _migrate_add_column(conn, "posts", "embedding", "TEXT")
         _migrate_add_column(conn, "posts", "summary", "TEXT")
@@ -95,6 +108,14 @@ def init_db():
         _migrate_add_column(conn, "web_results", "embedding", "TEXT")
         _migrate_add_column(conn, "web_results", "summary", "TEXT")
         _migrate_add_column(conn, "topics", "persona", "TEXT")
+        _migrate_add_column(conn, "topics", "embedding", "TEXT")
+        _migrate_add_column(conn, "web_results", "global_url_hash", "TEXT")
+        _migrate_add_column(conn, "web_results", "from_memory", "INTEGER DEFAULT 0")
+        # Index on global_url_hash must come after the column is guaranteed to exist
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_web_global_url_hash "
+            "ON web_results(global_url_hash) WHERE global_url_hash IS NOT NULL"
+        )
 
 
 def _migrate_add_column(conn, table: str, column: str, col_type: str):
@@ -411,3 +432,92 @@ def get_messages(session_id: int, limit: int = 20) -> list[dict]:
             (session_id, limit),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+
+# --- Memory / domain functions ---
+
+def upsert_domain(name: str) -> int:
+    now = _now_iso()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO domains (name, created_at) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+            (name, now),
+        )
+        row = conn.execute("SELECT id FROM domains WHERE name=?", (name,)).fetchone()
+        return row["id"]
+
+
+def link_topic_domain(topic_id: int, domain_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO topic_domains (topic_id, domain_id) VALUES (?, ?)",
+            (topic_id, domain_id),
+        )
+
+
+def save_topic_embedding(topic_id: int, embedding: list[float]):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE topics SET embedding=? WHERE id=?",
+            (json.dumps(embedding), topic_id),
+        )
+
+
+def get_topic_embeddings() -> list[tuple[int, list[float]]]:
+    """Return (topic_id, embedding) for all topics that have an embedding."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, embedding FROM topics WHERE embedding IS NOT NULL"
+        ).fetchall()
+    result = []
+    for r in rows:
+        emb = json.loads(r["embedding"]) if isinstance(r["embedding"], str) else r["embedding"]
+        if emb:
+            result.append((r["id"], emb))
+    return result
+
+
+def get_all_web_urls_globally() -> set[str]:
+    """All web URLs stored across every topic — used for global deduplication."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT DISTINCT url FROM web_results").fetchall()
+        return {r["url"] for r in rows}
+
+
+def save_web_result_from_memory(topic_id: int, result: dict) -> int | None:
+    """Insert a cached web result from another topic into this topic.
+    Uses INSERT OR IGNORE so already-present URLs are not overwritten.
+    Copies embedding + relevance_score so no re-processing is needed.
+    Returns the row id if the row was newly inserted, None if it already existed.
+    """
+    now = _now_iso()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO web_results
+               (topic_id, url, title, description, extra_snippets, age,
+                relevance_score, embedding, summary, from_memory, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                topic_id,
+                result["url"],
+                result["title"],
+                result.get("description", ""),
+                json.dumps(result.get("extra_snippets", [])),
+                result.get("age", ""),
+                result.get("relevance_score", -1),
+                result.get("embedding"),
+                result.get("summary"),
+                now,
+            ),
+        )
+        return cur.lastrowid if cur.lastrowid and cur.rowcount > 0 else None
+
+
+def get_memory_source_count(topic_id: int) -> int:
+    """Count web results injected from memory for this topic."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM web_results WHERE topic_id=? AND from_memory=1",
+            (topic_id,),
+        ).fetchone()
+        return row["n"] if row else 0

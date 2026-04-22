@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed  # used in _sear
 # Exit cleanly on SIGTERM (sent by the bash wrapper on Ctrl+C)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
 
-from reddit_research import db, llm, report, researcher
+from reddit_research import db, llm, memory, report, researcher
 from reddit_research.utils.resources import io_worker_count, safe_worker_count, system_summary
 from reddit_research._version import __version__
 from reddit_research.config import MAX_RESEARCH_ITERATIONS, RELEVANCE_THRESHOLD, validate
@@ -186,13 +186,37 @@ def run(topic: str, subreddits: list[str]) -> "Path":
 
     topic_id = db.upsert_topic(topic, subreddits)
 
-    # Resume: pre-populate seen sets from DB so we skip already-fetched content
+    # --- Research Memory: tag domains, embed topic, pull cached sources ---
+    status("Building research memory...")
+    topic_emb: list[float] | None = None
+    mem_stats: dict = {"injected_topics": 0, "injected_sources": 0}
+    try:
+        topic_emb = llm.embed(topic)
+        db.save_topic_embedding(topic_id, topic_emb)
+        domains = memory.tag_topic_domains(topic_id, topic)
+        if domains:
+            status(f"Domain tags: {', '.join(domains)}")
+        mem_stats = memory.pull_cross_topic_sources(topic_id, topic_emb)
+        if mem_stats["injected_sources"]:
+            status(
+                f"Memory: loaded {mem_stats['injected_sources']} cached sources "
+                f"from {mem_stats['injected_topics']} similar past session(s)"
+            )
+        else:
+            status("Memory: no similar past sessions found — starting fresh")
+    except Exception:
+        log.exception("memory initialisation failed — continuing without memory")
+
+    # Resume: skip already-fetched Reddit posts for this topic
     seen_reddit_urls: set[str] = db.get_existing_post_urls(topic_id)
-    seen_web_urls: set[str] = db.get_existing_web_urls(topic_id)
     if seen_reddit_urls:
-        status(f"Resume detected: {len(seen_reddit_urls)} Reddit posts already in DB — skipping")
-    if seen_web_urls:
-        status(f"Resume detected: {len(seen_web_urls)} web results already in DB — skipping")
+        status(f"Resume: {len(seen_reddit_urls)} Reddit posts already in DB — skipping")
+
+    # Global web URL dedup: never re-fetch a URL seen in any past topic
+    seen_web_urls: set[str] = db.get_all_web_urls_globally()
+    existing_web_count = len(db.get_existing_web_urls(topic_id))
+    if existing_web_count:
+        status(f"Resume: {existing_web_count} web results already in DB — skipping")
 
     total_posts = 0
     for qi, q in enumerate(all_queries):
@@ -240,7 +264,7 @@ def run(topic: str, subreddits: list[str]) -> "Path":
         db.mark_topic_fetched(topic_id)
 
     status("Generating report...")
-    path = report.generate(topic_id, question=topic)
+    path = report.generate(topic_id, question=topic, memory_stats=mem_stats)
     status(f"Report written: {path.name} ({path.stat().st_size} bytes)")
 
     final_r = len(db.get_posts(topic_id, min_relevance=RELEVANCE_THRESHOLD))
