@@ -10,12 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from reddit_research import db, llm
-from reddit_research.config import BASE_DIR, CONTEXT_POSTS, RELEVANCE_THRESHOLD
+from reddit_research.config import CONTEXT_POSTS, RELEVANCE_THRESHOLD
 from reddit_research.utils.logging_config import get_logger
 
 log = get_logger(__name__)
 
-REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(BASE_DIR / "reports")))
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(Path.home() / "reports")))
 POLL_INTERVAL = int(os.getenv("REPORT_POLL_INTERVAL", "60"))
 
 

@@ -10,7 +10,7 @@ fi
 
 PROJECT_DIR="/home/xavier/Desktop/reddit-research"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
-REPORTS_DIR="${REPORTS_DIR:-$HOME/research}"
+REPORTS_DIR="${REPORTS_DIR:-$HOME/reports}"
 
 mkdir -p "$REPORTS_DIR"
 export REPORTS_DIR
@@ -76,17 +76,6 @@ if [[ $PY_EXIT -ne 0 ]] || [[ -z "$REPORT_PATH" ]]; then
     exit 1
 fi
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-# Print the report — use bat if available, else cat
-if command -v bat &>/dev/null; then
-    bat --style=plain --paging=never --language=markdown "$REPORT_PATH"
-else
-    cat "$REPORT_PATH"
-fi
-
-echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Saved → $REPORT_PATH"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

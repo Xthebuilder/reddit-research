@@ -288,6 +288,11 @@ def main():
     try:
         report_path = run(topic, subreddits)
         print(f"REPORT_PATH:{report_path}")
+        # Print the report content so callers that don't use the bash wrapper get it inline
+        try:
+            print(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
     except Exception as e:
         log.exception("pipeline failed")
         print(f"ERROR: {e}", file=sys.stderr)
