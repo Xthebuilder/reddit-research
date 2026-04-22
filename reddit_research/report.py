@@ -1,6 +1,6 @@
 """
 Generates and auto-updates markdown research reports from the database.
-One .md file per topic, saved to REPORTS_DIR.
+One .md + one .html file per topic, saved to REPORTS_DIR.
 """
 import atexit
 import json
@@ -8,6 +8,8 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+
+import markdown as _md
 
 from reddit_research import db, llm
 from reddit_research.config import CONTEXT_POSTS, RELEVANCE_THRESHOLD
@@ -216,6 +218,119 @@ def _generate_direct_answer(question: str, posts: list, web_results: list) -> st
         return "_Direct answer unavailable (LLM error)._"
 
 
+_HTML_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px; line-height: 1.7; color: #1a1a2e;
+    background: #f8f9fa; padding: 0;
+}
+.page { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+h1 { font-size: 2rem; font-weight: 700; color: #0f3460; margin: 1.5rem 0 0.5rem; border-bottom: 3px solid #e94560; padding-bottom: 0.4rem; }
+h2 { font-size: 1.35rem; font-weight: 700; color: #16213e; margin: 2rem 0 0.6rem; padding-left: 0.6rem; border-left: 4px solid #e94560; }
+h3 { font-size: 1.1rem; font-weight: 600; color: #0f3460; margin: 1.4rem 0 0.4rem; }
+p { margin: 0.6rem 0; }
+a { color: #e94560; text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: #0f3460; }
+em { color: #555; }
+hr { border: none; border-top: 1px solid #dde; margin: 1.8rem 0; }
+blockquote {
+    border-left: 3px solid #ccd; padding: 0.3rem 1rem;
+    color: #555; background: #f0f2f8; margin: 0.5rem 0; border-radius: 0 4px 4px 0;
+}
+ul, ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+li { margin: 0.25rem 0; }
+code { background: #eef0f8; padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em; font-family: "SF Mono", "Fira Code", monospace; }
+pre { background: #1a1a2e; color: #e2e8f0; padding: 1rem; border-radius: 6px; overflow-x: auto; margin: 1rem 0; }
+pre code { background: none; padding: 0; color: inherit; font-size: 0.85em; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.93rem; }
+th { background: #0f3460; color: #fff; padding: 0.5rem 0.75rem; text-align: left; }
+td { padding: 0.45rem 0.75rem; border-bottom: 1px solid #dde; }
+tr:nth-child(even) td { background: #f0f2f8; }
+.meta { background: #fff; border: 1px solid #dde; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0 1.5rem; font-size: 0.9rem; color: #444; line-height: 1.9; }
+.memory-badge {
+    display: inline-block; background: #e8f5e9; color: #2e7d32;
+    border: 1px solid #a5d6a7; border-radius: 20px;
+    padding: 0.2rem 0.75rem; font-size: 0.82rem; font-weight: 600; margin-top: 0.4rem;
+}
+@media (max-width: 600px) {
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.15rem; }
+    .page { padding: 1rem 1rem 3rem; }
+}
+@media print {
+    body { background: #fff; }
+    .page { max-width: 100%; padding: 0; }
+    a { color: #000; }
+}
+"""
+
+
+def _to_html(md_text: str, title: str) -> str:
+    """Convert markdown report text to a self-contained, mobile-friendly HTML file."""
+    # Separate the metadata block (lines starting with **Key:**) from the body
+    # so we can render it in a styled card rather than as raw bold text.
+    lines = md_text.split("\n")
+    meta_lines: list[str] = []
+    body_lines: list[str] = []
+    in_meta = False
+    heading_seen = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("# ") and not heading_seen:
+            heading_seen = True
+            body_lines.append(line)
+            in_meta = True
+            continue
+        if in_meta:
+            if stripped.startswith("**") and ":**" in stripped:
+                meta_lines.append(stripped)
+                continue
+            elif stripped == "" and meta_lines:
+                continue  # blank line inside meta block
+            else:
+                in_meta = False
+        body_lines.append(line)
+
+    # Build meta card HTML
+    meta_html = ""
+    if meta_lines:
+        rows = []
+        for m in meta_lines:
+            # **Memory:** ... badge vs plain line
+            if m.startswith("**Memory:**"):
+                val = m.replace("**Memory:**", "").strip().rstrip()
+                rows.append(f'<span class="memory-badge">🧠 {val}</span>')
+            else:
+                rows.append(m.rstrip("  "))
+        meta_html = '<div class="meta">' + "<br>".join(rows) + "</div>"
+
+    body_md = "\n".join(body_lines)
+    body_html = _md.markdown(
+        body_md,
+        extensions=["tables", "fenced_code", "nl2br"],
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>{_HTML_CSS}</style>
+</head>
+<body>
+<div class="page">
+{meta_html}
+{body_html}
+</div>
+</body>
+</html>"""
+
+
 def generate(topic_id: int, question: str | None = None, memory_stats: dict | None = None) -> Path:
     """Generate (or regenerate) the markdown report for a topic.
 
@@ -381,7 +496,13 @@ def generate(topic_id: int, question: str | None = None, memory_stats: dict | No
     lines += ["---", "", "_Report auto-generated by reddit-research tool_"]
 
     path = report_path(topic)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    md_text = "\n".join(lines)
+    path.write_text(md_text, encoding="utf-8")
+
+    # Export a self-contained HTML file alongside the markdown
+    html_path = path.with_suffix(".html")
+    html_path.write_text(_to_html(md_text, topic["name"]), encoding="utf-8")
+
     return path
 
 

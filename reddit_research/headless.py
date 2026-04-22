@@ -312,6 +312,9 @@ def main():
     try:
         report_path = run(topic, subreddits)
         print(f"REPORT_PATH:{report_path}")
+        html_path = report_path.with_suffix(".html")
+        if html_path.exists():
+            print(f"HTML_PATH:{html_path}")
         # Print the report content so callers that don't use the bash wrapper get it inline
         try:
             print(report_path.read_text(encoding="utf-8"))

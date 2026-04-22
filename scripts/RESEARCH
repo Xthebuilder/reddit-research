@@ -54,9 +54,12 @@ PY_PID=$!
 REPORT_PATH=""
 
 # Stream from the FIFO, strip [STATUS] prefix for clean display
+HTML_PATH=""
 while IFS= read -r line; do
     if [[ "$line" == REPORT_PATH:* ]]; then
         REPORT_PATH="${line#REPORT_PATH:}"
+    elif [[ "$line" == HTML_PATH:* ]]; then
+        HTML_PATH="${line#HTML_PATH:}"
     elif [[ "$line" == "[STATUS]"* ]]; then
         echo "  ${line#\[STATUS\] }"
     else
@@ -77,6 +80,7 @@ if [[ $PY_EXIT -ne 0 ]] || [[ -z "$REPORT_PATH" ]]; then
 fi
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Saved → $REPORT_PATH"
+echo "  Markdown → $REPORT_PATH"
+[[ -n "$HTML_PATH" ]] && echo "  HTML    → $HTML_PATH"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
