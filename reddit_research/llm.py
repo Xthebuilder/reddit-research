@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import httpx
 
@@ -70,14 +71,29 @@ def _chat_fast(messages: list[dict], **kwargs) -> str:
 
 
 def _chat_smart(messages: list[dict], **kwargs) -> str:
-    """Use the smart model (gpt-oss:20b) for reasoning tasks: gap analysis, synthesis, RAG."""
+    """Use the smart model (gpt-oss:20b) for reasoning tasks: gap analysis, synthesis, RAG.
+
+    Retries on transient Ollama 5xx (model-load crash, brief VRAM contention) so
+    a single bad window doesn't void the whole synthesis pass.
+    """
     if _using_llama_cpp():
         from reddit_research import llama_cpp_client as lc
         return lc.chat(messages, **kwargs)
     payload = {"model": OLLAMA_SMART_MODEL, "messages": messages, "stream": False, **kwargs}
-    r = get_client().post(_CHAT_URL, json=payload, timeout=LONG_TIMEOUT)
-    r.raise_for_status()
-    return r.json()["message"]["content"].strip()
+    delay = 2.0
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            r = get_client().post(_CHAT_URL, json=payload, timeout=LONG_TIMEOUT)
+            r.raise_for_status()
+            return r.json()["message"]["content"].strip()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code < 500 or attempt == attempts - 1:
+                raise
+            log.warning("_chat_smart: Ollama %d (attempt %d/%d) — sleeping %.1fs",
+                        e.response.status_code, attempt + 1, attempts, delay)
+            time.sleep(delay)
+            delay *= 2
 
 
 def _chat_stream(messages: list[dict], on_token=None):

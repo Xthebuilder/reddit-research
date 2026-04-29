@@ -101,6 +101,15 @@ def init_db():
                 PRIMARY KEY (topic_id, domain_id)
             );
 
+            CREATE TABLE IF NOT EXISTS predicted_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL UNIQUE,
+                source_topic_ids TEXT NOT NULL,
+                predicted_score REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL
+            );
+
         """)
         _migrate_add_column(conn, "posts", "embedding", "TEXT")
         _migrate_add_column(conn, "posts", "summary", "TEXT")
@@ -111,6 +120,8 @@ def init_db():
         _migrate_add_column(conn, "topics", "embedding", "TEXT")
         _migrate_add_column(conn, "web_results", "global_url_hash", "TEXT")
         _migrate_add_column(conn, "web_results", "from_memory", "INTEGER DEFAULT 0")
+        _migrate_add_column(conn, "topics", "times_researched", "INTEGER DEFAULT 1")
+        _migrate_add_column(conn, "topics", "last_opened_at", "TEXT")
         # Index on global_url_hash must come after the column is guaranteed to exist
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_web_global_url_hash "
@@ -521,3 +532,71 @@ def get_memory_source_count(topic_id: int) -> int:
             (topic_id,),
         ).fetchone()
         return row["n"] if row else 0
+
+
+# --- Interest signals ---
+
+def increment_topic_researched(topic_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE topics SET times_researched = COALESCE(times_researched, 1) + 1 WHERE id=?",
+            (topic_id,),
+        )
+
+
+def mark_topic_opened(topic_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE topics SET last_opened_at=? WHERE id=?",
+            (_now_iso(), topic_id),
+        )
+
+
+def get_all_topics_with_signals() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT id, name, subreddits, created_at, last_fetched,
+                      times_researched, last_opened_at, embedding
+               FROM topics ORDER BY created_at DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- Predicted topics ---
+
+def save_prediction(query: str, source_topic_ids: list[int], predicted_score: float):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO predicted_topics (query, source_topic_ids, predicted_score, created_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(query) DO UPDATE SET
+                 predicted_score=excluded.predicted_score,
+                 source_topic_ids=excluded.source_topic_ids,
+                 status='pending',
+                 created_at=excluded.created_at""",
+            (query, json.dumps(source_topic_ids), predicted_score, _now_iso()),
+        )
+
+
+def get_pending_predictions(limit: int = 10) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM predicted_topics WHERE status='pending'
+               ORDER BY predicted_score DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_prediction_researched(pred_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE predicted_topics SET status='researched' WHERE id=?", (pred_id,)
+        )
+
+
+def dismiss_prediction(pred_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE predicted_topics SET status='dismissed' WHERE id=?", (pred_id,)
+        )

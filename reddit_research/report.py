@@ -223,36 +223,36 @@ _HTML_CSS = """
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
                  "Helvetica Neue", Arial, sans-serif;
-    font-size: 16px; line-height: 1.7; color: #1a1a2e;
-    background: #f8f9fa; padding: 0;
+    font-size: 16px; line-height: 1.7; color: #e2e8f0;
+    background: #000; padding: 0;
 }
 .page { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
-h1 { font-size: 2rem; font-weight: 700; color: #0f3460; margin: 1.5rem 0 0.5rem; border-bottom: 3px solid #e94560; padding-bottom: 0.4rem; }
-h2 { font-size: 1.35rem; font-weight: 700; color: #16213e; margin: 2rem 0 0.6rem; padding-left: 0.6rem; border-left: 4px solid #e94560; }
-h3 { font-size: 1.1rem; font-weight: 600; color: #0f3460; margin: 1.4rem 0 0.4rem; }
+h1 { font-size: 2rem; font-weight: 700; color: #fff; margin: 1.5rem 0 0.5rem; border-bottom: 3px solid #e94560; padding-bottom: 0.4rem; }
+h2 { font-size: 1.35rem; font-weight: 700; color: #e2e8f0; margin: 2rem 0 0.6rem; padding-left: 0.6rem; border-left: 4px solid #e94560; }
+h3 { font-size: 1.1rem; font-weight: 600; color: #cbd5e0; margin: 1.4rem 0 0.4rem; }
 p { margin: 0.6rem 0; }
 a { color: #e94560; text-decoration: none; }
 a:hover { text-decoration: underline; }
-strong { color: #0f3460; }
-em { color: #555; }
-hr { border: none; border-top: 1px solid #dde; margin: 1.8rem 0; }
+strong { color: #fff; }
+em { color: #a0aec0; }
+hr { border: none; border-top: 1px solid #2d3748; margin: 1.8rem 0; }
 blockquote {
-    border-left: 3px solid #ccd; padding: 0.3rem 1rem;
-    color: #555; background: #f0f2f8; margin: 0.5rem 0; border-radius: 0 4px 4px 0;
+    border-left: 3px solid #4a5568; padding: 0.3rem 1rem;
+    color: #a0aec0; background: #111827; margin: 0.5rem 0; border-radius: 0 4px 4px 0;
 }
 ul, ol { padding-left: 1.5rem; margin: 0.5rem 0; }
 li { margin: 0.25rem 0; }
-code { background: #eef0f8; padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em; font-family: "SF Mono", "Fira Code", monospace; }
-pre { background: #1a1a2e; color: #e2e8f0; padding: 1rem; border-radius: 6px; overflow-x: auto; margin: 1rem 0; }
+code { background: #111827; color: #e2e8f0; padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em; font-family: "SF Mono", "Fira Code", monospace; }
+pre { background: #111827; color: #e2e8f0; padding: 1rem; border-radius: 6px; overflow-x: auto; margin: 1rem 0; }
 pre code { background: none; padding: 0; color: inherit; font-size: 0.85em; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.93rem; }
-th { background: #0f3460; color: #fff; padding: 0.5rem 0.75rem; text-align: left; }
-td { padding: 0.45rem 0.75rem; border-bottom: 1px solid #dde; }
-tr:nth-child(even) td { background: #f0f2f8; }
-.meta { background: #fff; border: 1px solid #dde; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0 1.5rem; font-size: 0.9rem; color: #444; line-height: 1.9; }
+th { background: #1a202c; color: #fff; padding: 0.5rem 0.75rem; text-align: left; }
+td { padding: 0.45rem 0.75rem; border-bottom: 1px solid #2d3748; color: #e2e8f0; }
+tr:nth-child(even) td { background: #111827; }
+.meta { background: #111827; border: 1px solid #2d3748; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0 1.5rem; font-size: 0.9rem; color: #a0aec0; line-height: 1.9; }
 .memory-badge {
-    display: inline-block; background: #e8f5e9; color: #2e7d32;
-    border: 1px solid #a5d6a7; border-radius: 20px;
+    display: inline-block; background: #1a2e1a; color: #68d391;
+    border: 1px solid #276749; border-radius: 20px;
     padding: 0.2rem 0.75rem; font-size: 0.82rem; font-weight: 600; margin-top: 0.4rem;
 }
 @media (max-width: 600px) {
@@ -261,9 +261,9 @@ tr:nth-child(even) td { background: #f0f2f8; }
     .page { padding: 1rem 1rem 3rem; }
 }
 @media print {
-    body { background: #fff; }
+    body { background: #000; color: #fff; }
     .page { max-width: 100%; padding: 0; }
-    a { color: #000; }
+    a { color: #e94560; }
 }
 """
 
