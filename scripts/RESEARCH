@@ -8,7 +8,7 @@ if [[ -z "$QUESTION" ]]; then
     exit 1
 fi
 
-PROJECT_DIR="/home/xavier/Desktop/reddit-research"
+PROJECT_DIR="/absolute/path/to/reddit-research"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 REPORTS_DIR="${REPORTS_DIR:-$HOME/reports}"
 
